@@ -1,4 +1,3 @@
-<?xml version="1.0"?>
 <CommunityApplications>
   <Profile>Self-hosted Qobuz music downloader for UNRAID. Paste a Qobuz playlist URL, choose your quality tier (MP3 to FLAC 24-bit/192kHz), and Ripuz downloads every track, tags with MusicBrainz Picard, and files into your library as Artist/Album/Title.FLAC. For support and issues visit the GitHub repository.</Profile>
   <Icon>https://raw.githubusercontent.com/Suvir0/ripuz/main/icon.svg</Icon>
