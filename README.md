@@ -2,12 +2,12 @@
 
 Self-hosted Qobuz → MusicBrainz Picard music downloader for UNRAID.
 
-Downloads playlists at **max FLAC quality (24-bit/192kHz)**, tags with Picard, and files tracks into your library as `Artist/Album/Song.FLAC`.
+Downloads playlists at a **configurable quality** (MP3 320 → FLAC 24-bit/192kHz), tags with Picard, and files tracks into your library as `Artist/Album/Song.FLAC`.
 
 ## What it does
 
 1. You paste a Qobuz playlist URL into the WebUI.
-2. **Download playlist** — grabs every track at `-q 27` (max FLAC).
+2. **Download playlist** — grabs every track at your chosen quality tier (settable in **Settings**).
 3. **Expand to full albums** — for each track, finds the album it belongs to via the Qobuz API, deduplicates, then downloads every complete album.
 4. Picard runs headlessly (under Xvfb) to tag and move files to your music library as `Artist/Album/Title.FLAC`.
 
@@ -77,7 +77,7 @@ docker build -t ripuz .
 | `APP_PORT` | `8080` | WebUI port |
 | `PICARD_TIMEOUT` | `600` | Seconds before Picard is killed |
 | `PICARD_BIN` | `picard` | Override Picard binary path |
-| `QOBUZ_QUALITY` | `27` | 5=MP3, 6=FLAC 16/44, 7=FLAC 24/96, 27=FLAC 24/192 |
+| `QOBUZ_QUALITY` | `27` | Startup default quality: 5=MP3, 6=FLAC 16/44, 7=FLAC 24/96, 27=FLAC 24/192. Overridden by the Settings UI once saved. |
 | `RIPUZ_AUTH_USER` | `ripuz` | Basic Auth username (if enabled) |
 | `RIPUZ_AUTH_PASS` | _(empty)_ | Basic Auth password; set to enable auth |
 | `CHOWN_MUSIC_RECURSIVE` | `0` | Set to `1` to chown `/music` recursively on startup |
@@ -91,7 +91,7 @@ app/
   db.py             SQLite: jobs, settings, album_cache
   settings_store.py Persist settings + render qobuz-dl config.ini
   qobuz_client.py   Qobuz API: playlist→tracks, track→album_id, dedup
-  qobuz_cli.py      Subprocess wrapper for `qobuz-dl dl -q 27`
+  qobuz_cli.py      Subprocess wrapper for `qobuz-dl dl -q <quality>`
   picard.py         Headless Picard runner (xvfb-run + -e commands)
   pipeline.py       Orchestrate download→tag→verify→cleanup
   jobs.py           SQLite job queue + background worker thread
@@ -99,7 +99,7 @@ app/
   static/           index.html, style.css, app.js
 picard/
   Picard.ini        Picard config template (move+rename, naming script)
-tests/              105 unit tests, all mocked (no real Qobuz/Picard needed)
+tests/              224 unit tests, all mocked (no real Qobuz/Picard needed)
 Dockerfile          python:3.12-slim + picard + xvfb + ffmpeg + gosu
 entrypoint.sh       PUID/PGID/UMASK drop + Picard.ini MUSIC_DIR injection
 docker-compose.yml  Local dev / UNRAID reference
@@ -121,10 +121,6 @@ Ripuz ships with **no authentication enabled by default** for trusted-LAN homela
 ## Legal / disclaimer
 
 Ripuz orchestrates downloads using **your own Qobuz subscription** and the official authenticated API. No music is bundled or distributed. Use for personal use only; this may violate Qobuz's Terms of Service. You are responsible for compliance in your jurisdiction.
-
-## Acknowledgements
-
-Built with assistance from AI tools.
 
 ## Notice
 
