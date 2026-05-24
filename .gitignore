@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# pytest
+.pytest_cache/
+*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Runtime data (never commit live DB or downloaded media)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local secrets / config overrides
+.env
+.env.*
+config.ini
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Private dev / deploy notes (keep local, never publish)
+CLAUDE.md

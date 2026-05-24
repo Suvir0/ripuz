@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<Profile>
+  <Name>Ripuz</Name>
+  <Overview>Self-hosted Qobuz downloader that tags with MusicBrainz Picard and files into Artist/Album/Title.FLAC.</Overview>
+  <Description>Ripuz downloads your Qobuz library content (using your subscription), tags with headless MusicBrainz Picard, and files into a clean music library structure.</Description>
+  <Category>MediaApp:Music</Category>
+  <WebPage>https://github.com/Suvir0/ripuz</WebPage>
+  <Support>https://github.com/Suvir0/ripuz/issues</Support>
+  <Icon>https://raw.githubusercontent.com/Suvir0/ripuz/main/icon.svg</Icon>
+</Profile>

@@ -1,0 +1,22 @@
+services:
+  ripuz:
+    build: .
+    container_name: ripuz
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/config:/config
+      - ./data/downloads:/downloads
+      - ./data/music:/music
+    environment:
+      PUID: "99"
+      PGID: "100"
+      UMASK: "022"
+      CONFIG_DIR: "/config"
+      DOWNLOADS_DIR: "/downloads"
+      MUSIC_DIR: "/music"
+      APP_PORT: "8080"
+      LOG_LEVEL: "info"
+      # Optional: set a custom Picard timeout (seconds)
+      # PICARD_TIMEOUT: "600"
+    restart: unless-stopped

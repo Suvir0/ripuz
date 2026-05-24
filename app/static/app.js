@@ -1,0 +1,300 @@
+'use strict';
+
+/* ── theme ──────────────────────────────────────────────────────── */
+const root = document.documentElement;
+const savedTheme = localStorage.getItem('ripuz-theme');
+if (savedTheme) root.setAttribute('data-theme', savedTheme);
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  root.setAttribute('data-theme', next);
+  localStorage.setItem('ripuz-theme', next);
+});
+
+/* ── tabs ───────────────────────────────────────────────────────── */
+const tabBtns = document.querySelectorAll('nav.tabs button');
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  tabBtns.forEach(b => b.setAttribute('aria-selected', b.dataset.tab === name ? 'true' : 'false'));
+  location.hash = name;
+}
+tabBtns.forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+const initHash = location.hash.replace('#', '');
+if (['add', 'jobs', 'settings'].includes(initHash)) showTab(initHash);
+
+/* ── messages ───────────────────────────────────────────────────── */
+function flash(id, text, cls = 'ok') {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'msg ' + cls + ' show';
+  setTimeout(() => el.classList.remove('show'), 2400);
+}
+
+/* ── helpers ────────────────────────────────────────────────────── */
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+const TYPE_META = {
+  track:                  { label: 'single track',       icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>` },
+  album:                  { label: 'album',              icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>` },
+  discography:            { label: 'discography',        icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>` },
+  playlist:               { label: 'playlist',           icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>` },
+  expand_albums:          { label: 'playlist → albums',  icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>` },
+  expand_discographies:   { label: 'playlist → discos',  icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>` },
+};
+
+function typeIcon(type) {
+  return (TYPE_META[type] || TYPE_META['playlist']).icon;
+}
+
+function typeLabel(type) {
+  return (TYPE_META[type] || { label: type }).label;
+}
+
+/* ── settings ───────────────────────────────────────────────────── */
+async function loadSettings() {
+  try {
+    const res = await fetch('/api/settings');
+    const s = await res.json();
+    const tokenStatus = document.getElementById('token-status');
+    if (s.qobuz_token) {
+      tokenStatus.textContent = 'saved';
+      tokenStatus.style.color = 'var(--success)';
+    } else {
+      tokenStatus.textContent = 'not set';
+      tokenStatus.style.color = 'var(--faint)';
+    }
+    document.getElementById('downloads_dir').value = s.downloads_dir || '';
+    document.getElementById('music_dir').value = s.music_dir || '';
+    if (s.music_quality) {
+      document.getElementById('music_quality').value = String(s.music_quality);
+    }
+  } catch (e) {
+    console.error('loadSettings', e);
+  }
+}
+
+document.getElementById('settings-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const token = document.getElementById('qobuz_token').value.trim();
+  const body = {
+    qobuz_token: token,
+    downloads_dir: document.getElementById('downloads_dir').value.trim(),
+    music_dir: document.getElementById('music_dir').value.trim(),
+    music_quality: parseInt(document.getElementById('music_quality').value, 10),
+  };
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      flash('settings-msg', '✓ saved', 'ok');
+      document.getElementById('qobuz_token').value = '';
+      loadSettings();
+    } else {
+      flash('settings-msg', 'error saving', 'err');
+    }
+  } catch (err) {
+    flash('settings-msg', String(err), 'err');
+  }
+});
+
+/* ── mode selector ──────────────────────────────────────────────── */
+let selectedMode = 'track';
+
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedMode = btn.dataset.mode;
+    document.getElementById('playlist-url').placeholder = btn.dataset.placeholder;
+  });
+});
+
+/* ── add form ───────────────────────────────────────────────────── */
+document.getElementById('add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = document.getElementById('playlist-url').value.trim();
+  if (!url) return;
+  try {
+    const res = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: selectedMode, url }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      flash('add-msg', `✓ job #${data.job_id} queued`, 'ok');
+      document.getElementById('playlist-url').value = '';
+      setTimeout(() => showTab('jobs'), 350);
+      loadJobs();
+    } else {
+      flash('add-msg', data.error || 'error creating job', 'err');
+    }
+  } catch (err) {
+    flash('add-msg', String(err), 'err');
+  }
+});
+
+/* ── jobs ───────────────────────────────────────────────────────── */
+const STATUS_MAP = {
+  queued:             { label: 'queued',      cls: 'pill-queued'  },
+  resolving:          { label: 'resolving',   cls: 'pill-running' },
+  downloading:        { label: 'downloading', cls: 'pill-running' },
+  tagging:            { label: 'tagging',     cls: 'pill-tagging' },
+  verifying:          { label: 'verifying',   cls: 'pill-tagging' },
+  done:               { label: 'done',        cls: 'pill-done'    },
+  done_with_warnings: { label: 'done · warn', cls: 'pill-warn'    },
+  error:              { label: 'error',       cls: 'pill-error'   },
+};
+
+const ACTIVE_STATUSES = new Set(['queued', 'resolving', 'downloading', 'tagging', 'verifying']);
+
+let cachedJobs = [];
+let currentFilter = 'all';
+
+function renderJobs() {
+  const container = document.getElementById('jobs-list');
+  const filtered = cachedJobs.filter(j => {
+    if (currentFilter === 'all') return true;
+    if (currentFilter === 'active') return ACTIVE_STATUSES.has(j.status);
+    if (currentFilter === 'done') return j.status === 'done' || j.status === 'done_with_warnings';
+    if (currentFilter === 'error') return j.status === 'error';
+    return true;
+  });
+
+  if (!filtered.length) {
+    container.innerHTML = `<div class="empty"><span class="mono">no jobs</span>Paste a playlist URL on the <b>Add</b> tab to start a download.</div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(job => {
+    const s = STATUS_MAP[job.status] || { label: job.status, cls: 'pill-queued' };
+    const label = typeLabel(job.type);
+    return `
+      <div class="job-card">
+        <div class="job-num">#${String(job.id).padStart(3, '0')}</div>
+        <div class="job-main">
+          <div class="job-title">${typeIcon(job.type)} ${escHtml(label)}</div>
+          <div class="job-url">${escHtml(job.url)}</div>
+          <div class="job-meta"><span>${escHtml(job.created_at)}</span></div>
+        </div>
+        <span class="pill ${s.cls}">${s.label}</span>
+        <button class="job-log-btn" onclick="showLog(${job.id})">Log</button>
+      </div>
+    `;
+  }).join('');
+
+  // update worker status indicator
+  const hasActive = cachedJobs.some(j => ACTIVE_STATUSES.has(j.status));
+  const dot = document.getElementById('worker-status');
+  dot.textContent = hasActive ? 'worker · running' : 'worker · idle';
+  dot.classList.toggle('active', hasActive);
+}
+
+async function loadJobs() {
+  try {
+    const res = await fetch('/api/jobs');
+    cachedJobs = await res.json();
+    renderJobs();
+  } catch (e) {
+    document.getElementById('jobs-list').innerHTML =
+      `<div class="empty"><span class="mono">error</span>Failed to load jobs.</div>`;
+  }
+}
+
+document.querySelectorAll('.jobs-filter button').forEach(b => {
+  b.addEventListener('click', () => {
+    currentFilter = b.dataset.filter;
+    document.querySelectorAll('.jobs-filter button').forEach(x =>
+      x.setAttribute('aria-selected', x === b ? 'true' : 'false')
+    );
+    renderJobs();
+  });
+});
+
+document.getElementById('refresh-jobs').addEventListener('click', loadJobs);
+
+/* ── modal / log viewer ─────────────────────────────────────────── */
+function colorLine(text) {
+  const low = text.toLowerCase();
+  if (/error|failed|exception/.test(low)) return 'err';
+  if (/warn|warning/.test(low)) return 'warn';
+  if (/\[pipeline\]|\[pipeline\//.test(low)) return 'dim';
+  return '';
+}
+
+let currentLogJobId = null;
+
+function renderLogContent(data) {
+  const logEl = document.getElementById('modal-log');
+  const job = cachedJobs.find(j => j.id === data.id) || data;
+  document.getElementById('modal-sub').textContent =
+    `${typeLabel(job.type)} · ${job.status}`;
+  const lines = (data.log || '(no log yet)').split('\n');
+  const atBottom = logEl.parentElement.scrollHeight - logEl.parentElement.scrollTop
+    <= logEl.parentElement.clientHeight + 40;
+  logEl.innerHTML = lines.map((line, i) => {
+    const num = String(i + 1).padStart(2, '0');
+    const cls = colorLine(line);
+    return `<span class="line-num">${num}</span><span class="${cls}">${escHtml(line)}</span>\n`;
+  }).join('');
+  if (atBottom) logEl.parentElement.scrollTop = logEl.parentElement.scrollHeight;
+}
+
+async function refreshModalLog() {
+  if (currentLogJobId === null) return;
+  try {
+    const res = await fetch('/api/jobs/' + currentLogJobId);
+    const data = await res.json();
+    renderLogContent(data);
+  } catch (e) { /* silent — don't clobber the log on transient error */ }
+}
+
+window.showLog = async function(jobId) {
+  const job = cachedJobs.find(j => j.id === jobId);
+  const modal = document.getElementById('job-modal');
+  const logEl = document.getElementById('modal-log');
+
+  currentLogJobId = jobId;
+  document.getElementById('modal-title').textContent = `Job #${String(jobId).padStart(3, '0')} log`;
+  document.getElementById('modal-sub').textContent = job
+    ? `${typeLabel(job.type)} · ${job.status}`
+    : '';
+
+  logEl.innerHTML = '<span class="dim">loading…</span>';
+  modal.classList.remove('hidden');
+
+  await refreshModalLog();
+};
+
+function closeModal() {
+  currentLogJobId = null;
+  document.getElementById('job-modal').classList.add('hidden');
+}
+document.getElementById('modal-close').addEventListener('click', closeModal);
+document.getElementById('job-modal').addEventListener('click', e => {
+  if (e.target.id === 'job-modal') closeModal();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+/* ── auto-refresh ───────────────────────────────────────────────── */
+setInterval(() => {
+  if (document.getElementById('tab-jobs').classList.contains('active')) loadJobs();
+}, 5000);
+
+// Refresh the open log modal every 2 s while the job is active.
+setInterval(() => {
+  if (currentLogJobId === null) return;
+  const job = cachedJobs.find(j => j.id === currentLogJobId);
+  if (job && ACTIVE_STATUSES.has(job.status)) refreshModalLog();
+}, 2000);
+
+/* ── init ───────────────────────────────────────────────────────── */
+loadSettings();
+loadJobs();
