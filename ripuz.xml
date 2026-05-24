@@ -12,7 +12,7 @@
   <Overview>Qobuz → Picard → Plex/Roon music downloader. Downloads at max FLAC quality, tags with MusicBrainz Picard, and files into Artist/Album/song.FLAC structure.</Overview>
   <Category>MediaApp:Music</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/Suvir0/ripuz/main/ripuz.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/Suvir0/ripuz/main/templates/ripuz.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/Suvir0/ripuz/main/icon.svg</Icon>
   <ExtraParams/>
   <PostArgs/>
