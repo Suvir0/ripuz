@@ -1,6 +1,10 @@
 # Ripuz
 
+> **Name:** "Ripuz" is a play on Qobuz — ripping music from a service that ends in *uz*.
+
 Self-hosted Qobuz → MusicBrainz Picard music downloader for UNRAID.
+
+> **Built with AI assistance:** This project was developed with the help of Claude (Anthropic).
 
 Downloads playlists at a **configurable quality** (MP3 320 → FLAC 24-bit/192kHz), tags with Picard, and files tracks into your library as `Artist/Album/Song.FLAC`.
 
