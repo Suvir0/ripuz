@@ -1,10 +1,6 @@
 <?xml version="1.0"?>
-<Profile>
-  <Name>Ripuz</Name>
-  <Overview>Self-hosted Qobuz downloader that tags with MusicBrainz Picard and files into Artist/Album/Title.FLAC.</Overview>
-  <Description>Ripuz downloads your Qobuz library content (using your subscription), tags with headless MusicBrainz Picard, and files into a clean music library structure.</Description>
-  <Category>MediaApp:Music</Category>
-  <WebPage>https://github.com/Suvir0/ripuz</WebPage>
-  <Support>https://github.com/Suvir0/ripuz/issues</Support>
+<CommunityApplications>
+  <Profile>Self-hosted Qobuz music downloader for UNRAID. Paste a Qobuz playlist URL, choose your quality tier (MP3 to FLAC 24-bit/192kHz), and Ripuz downloads every track, tags with MusicBrainz Picard, and files into your library as Artist/Album/Title.FLAC. For support and issues visit the GitHub repository.</Profile>
   <Icon>https://raw.githubusercontent.com/Suvir0/ripuz/main/icon.svg</Icon>
-</Profile>
+  <WebPage>https://github.com/Suvir0/ripuz</WebPage>
+</CommunityApplications>
