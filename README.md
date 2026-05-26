@@ -33,7 +33,7 @@ docker run -d --name ripuz --restart unless-stopped \
   -v /mnt/user/appdata/ripuz/downloads:/downloads \
   -v /mnt/user/Music:/music \
   -e PUID=99 -e PGID=100 -e UMASK=022 \
-  ghcr.io/Suvir0/ripuz:latest
+  ghcr.io/suvir0/ripuz:latest
 ```
 
 Then open **http://your-server-ip:8080**.
