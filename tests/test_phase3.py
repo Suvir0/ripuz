@@ -28,11 +28,11 @@ def test_command_includes_url():
     assert url in cmd
 
 
-def test_command_includes_end_of_flags_delimiter():
+def test_url_is_last_argument():
     url = "https://play.qobuz.com/album/xyz123"
     cmd = build_download_command(url, Path("/downloads"))
-    assert "--" in cmd
-    assert cmd[cmd.index("--") + 1] == url
+    assert cmd[-1] == url
+    assert "--" not in cmd
 
 
 def test_command_includes_download_dir():

@@ -62,14 +62,13 @@ def build_download_command(
     """Return the argv list for a qobuz-dl dl invocation."""
     return [
         sys.executable, "-m", "qobuz_dl", "dl",
-        "--",   # prevent url from being parsed as a qobuz-dl flag
-        url,
         "-q", str(quality),
         "-d", str(downloads_dir),
         "-ff", folder_format,
         "-tf", track_format,
         "--no-m3u",
         "--no-lrc-files",
+        url,
     ]
 
 
