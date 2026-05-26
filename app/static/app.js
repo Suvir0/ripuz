@@ -169,6 +169,9 @@ const CANCELLABLE_STATUSES = new Set([
   'downloading', 'tagging', 'verifying',
 ]);
 
+// Statuses where we show a Delete button.
+const DELETABLE_STATUSES = new Set(['done', 'done_with_warnings', 'error', 'cancelled']);
+
 let cachedJobs = [];
 let currentFilter = 'all';
 
@@ -219,6 +222,10 @@ function renderJobs() {
       ? `<button class="job-cancel-btn" onclick="cancelJob(${job.id})" title="Cancel job">✕</button>`
       : '';
 
+    const deleteBtn = DELETABLE_STATUSES.has(job.status)
+      ? `<button class="job-delete-btn" onclick="deleteJob(${job.id})" title="Delete job">🗑</button>`
+      : '';
+
     return `
       <div class="job-card${isAwaitingConfirm ? ' job-card--review' : ''}">
         <div class="job-num">#${String(job.id).padStart(3, '0')}</div>
@@ -229,6 +236,7 @@ function renderJobs() {
         </div>
         <span class="pill ${s.cls}">${s.label}</span>
         ${cancelBtn}
+        ${deleteBtn}
         <button class="job-log-btn" onclick="showLog(${job.id})">Log</button>
         ${confirmRow}
       </div>
@@ -275,6 +283,20 @@ window.cancelJob = async function(jobId) {
     } else {
       const d = await res.json();
       alert(`Could not cancel: ${d.error || res.status}`);
+    }
+  } catch (err) {
+    alert(`Error: ${err}`);
+  }
+};
+
+window.deleteJob = async function(jobId) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+    if (res.ok) {
+      await loadJobs();
+    } else {
+      const d = await res.json();
+      alert(`Could not delete: ${d.error || res.status}`);
     }
   } catch (err) {
     alert(`Error: ${err}`);

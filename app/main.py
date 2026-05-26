@@ -147,6 +147,20 @@ async def api_cancel_job(job_id: int):
     return {"ok": True}
 
 
+@app.delete("/api/jobs/{job_id}")
+async def api_delete_job(job_id: int):
+    job = db.get_job(job_id)
+    if not job:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if job["status"] not in db._TERMINAL_STATUSES:
+        return JSONResponse(
+            {"error": f"cannot delete active job (status: '{job['status']}')"},
+            status_code=409,
+        )
+    db.delete_job(job_id)
+    return {"ok": True}
+
+
 @app.post("/api/jobs")
 async def api_create_job(body: dict):
     from app.jobs import enqueue

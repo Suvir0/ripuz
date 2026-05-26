@@ -118,6 +118,57 @@ def test_album_cache_miss_returns_none():
     assert db.get_cached_album("not_there") is None
 
 
+# ── delete_job ─────────────────────────────────────────────────────────────────
+
+def test_delete_job_removes_row():
+    import app.db as db
+    job_id = db.create_job("playlist", "https://example.com/del1")
+    db.update_job(job_id, status="done")
+    assert db.delete_job(job_id) is True
+    assert db.get_job(job_id) is None
+
+
+def test_delete_job_nonexistent_returns_false():
+    import app.db as db
+    assert db.delete_job(999999) is False
+
+
+def test_api_delete_terminal_job():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    import app.db as db
+
+    job_id = db.create_job("playlist", "https://example.com/del2")
+    db.update_job(job_id, status="done")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.delete(f"/api/jobs/{job_id}")
+    assert resp.status_code == 200
+    assert db.get_job(job_id) is None
+
+
+def test_api_delete_active_job_rejected():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    import app.db as db
+
+    job_id = db.create_job("playlist", "https://example.com/del3")
+    # queued is not a terminal status
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.delete(f"/api/jobs/{job_id}")
+    assert resp.status_code == 409
+    assert db.get_job(job_id) is not None
+
+
+def test_api_delete_not_found():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.delete("/api/jobs/999999")
+    assert resp.status_code == 404
+
+
 # ── settings_store ─────────────────────────────────────────────────────────────
 
 def test_save_settings_persists_token():

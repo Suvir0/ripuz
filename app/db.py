@@ -157,6 +157,16 @@ def get_runnable_jobs() -> list[dict]:
 _ACTIVE_STATUSES = ("queued", "resolving", "confirmed", "downloading", "tagging", "verifying", "cancelling")
 
 
+_TERMINAL_STATUSES = {"done", "done_with_warnings", "error", "cancelled"}
+
+
+def delete_job(job_id: int) -> bool:
+    """Delete a job by ID. Returns True if a row was deleted, False if not found."""
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        return cur.rowcount > 0
+
+
 def purge_stale_jobs(cutoff_hours: int = 12) -> list[int]:
     """
     Mark active jobs whose updated_at is older than cutoff_hours as 'error'.
