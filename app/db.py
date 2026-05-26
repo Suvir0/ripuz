@@ -37,6 +37,10 @@ def init_db(db_path: Path) -> None:
             album_url TEXT NOT NULL
         );
         """)
+        # Migrate: add plan column if missing (safe for existing DBs).
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "plan" not in cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN plan TEXT NOT NULL DEFAULT ''")
 
 
 @contextmanager
@@ -114,6 +118,14 @@ def update_job(job_id: int, **fields) -> None:
         )
 
 
+def set_job_plan(job_id: int, plan_json: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET plan=?, updated_at=datetime('now') WHERE id=?",
+            (plan_json, job_id),
+        )
+
+
 def append_job_log(job_id: int, text: str) -> None:
     with _conn() as conn:
         conn.execute(
@@ -130,9 +142,19 @@ def get_queued_jobs() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_runnable_jobs() -> list[dict]:
+    """Return jobs the worker should process: queued (resolve phase) or confirmed (download phase)."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE status IN ('queued','confirmed') ORDER BY id ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── stale job purge ───────────────────────────────────────────────────────────
 
-_ACTIVE_STATUSES = ("queued", "resolving", "downloading", "tagging", "verifying")
+# awaiting_confirm is intentionally excluded — it waits for human action, not a timeout.
+_ACTIVE_STATUSES = ("queued", "resolving", "confirmed", "downloading", "tagging", "verifying", "cancelling")
 
 
 def purge_stale_jobs(cutoff_hours: int = 12) -> list[int]:

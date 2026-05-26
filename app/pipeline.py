@@ -1,31 +1,41 @@
 """
 Orchestrates: download → picard tag (per album) → move → verify → cleanup.
 
-Two pipeline types:
-  playlist    - qobuz-dl downloads the playlist directly, then each album dir
-                is tagged by Picard and moved into MUSIC_DIR.
-  expand_albums - QobuzClient resolves all tracks → album IDs, downloads each
-                  album individually, then tags and moves each batch.
+Pipeline types
+  track / album / playlist   - one-shot download, no confirm gate
+  discography                - resolve artist albums → confirm gate → download each album
+  expand_albums              - resolve playlist → album list → confirm gate → download each
+  expand_discographies       - resolve playlist → artist catalogs → confirm gate → download each
 
-Picard runs once per album directory (small batch) so that MusicBrainz lookup
-never times out on large playlists.  Even when Picard fails for a directory
-the files are still moved using qobuz-dl's embedded tags.
+All bulk pipelines (discography, expand_*) are split into two phases:
+  resolve  – API calls only, builds a plan, sets status awaiting_confirm, returns.
+  download – reads plan from DB, downloads album-by-album with disk guard + cancel.
+
+Picard runs once per album directory so MusicBrainz lookup never times out.
+Even when Picard fails the files are moved using qobuz-dl's embedded tags.
 """
+import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Callable, Optional
 
 from app import config, db
 from app.qobuz_cli import run_download
-from app.qobuz_client import make_client, album_url_from_id, artist_url_from_id
+from app.qobuz_client import make_client, album_url_from_id
 from app.picard import run_picard
 from app.mover import move_album
-from app.structure import clean_empty_dirs, list_album_dirs, verify_structure
+from app.structure import clean_empty_dirs, list_album_dirs, verify_structure, album_already_present
 from app.settings_store import get_token, get_quality
 
 logger = logging.getLogger(__name__)
 
 LogCallback = Callable[[str], None]
+
+# Estimated MB downloaded per minute of audio, by Qobuz quality tier.
+_MB_PER_MIN: dict[int, float] = {27: 50.0, 7: 25.0, 6: 10.0, 5: 2.4}
+
+_BULK_TYPES = {"discography", "expand_albums", "expand_discographies"}
 
 
 def _log(job_id: int, msg: str, callback: Optional[LogCallback] = None):
@@ -34,6 +44,8 @@ def _log(job_id: int, msg: str, callback: Optional[LogCallback] = None):
     if callback:
         callback(msg + "\n")
 
+
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 def _tag_and_move(job_id: int) -> tuple[int, int]:
     """
@@ -78,54 +90,184 @@ def _tag_and_move(job_id: int) -> tuple[int, int]:
     return total_moved, total_skipped
 
 
-def run_playlist_pipeline(job_id: int, playlist_url: str) -> bool:
-    """Download a Qobuz playlist then tag+move with Picard. Returns True on success."""
-    _log(job_id, f"[pipeline] downloading playlist: {playlist_url}")
-    db.update_job(job_id, status="downloading")
-
-    dl_result = run_download(
-        playlist_url,
-        downloads_dir=config.DOWNLOADS_DIR,
-        quality=get_quality(),
-        log_callback=lambda l: db.append_job_log(job_id, l),
-    )
-
-    if not dl_result.success:
-        _log(job_id, f"[pipeline] download failed: {dl_result.error_message}")
-        db.update_job(job_id, status="error")
+def _check_disk(job_id: int, label: str) -> bool:
+    """Return True if free space is above DISK_FLOOR_GB, False (and log) otherwise."""
+    try:
+        free_gb = shutil.disk_usage(config.DOWNLOADS_DIR).free / (1024 ** 3)
+    except OSError:
+        return True  # can't check — allow it
+    if free_gb < config.DISK_FLOOR_GB:
+        _log(
+            job_id,
+            f"[pipeline/{label}] abort: only {free_gb:.1f} GB free on downloads dir "
+            f"(floor is {config.DISK_FLOOR_GB} GB — set DISK_FLOOR_GB env var to change)",
+        )
         return False
+    return True
 
-    _log(job_id, "[pipeline] download done — starting per-album tagging")
 
-    total_moved, total_skipped = _tag_and_move(job_id)
+def _estimate_gb(albums: list[dict], quality: int) -> float:
+    mb_per_min = _MB_PER_MIN.get(quality, 30.0)
+    total_secs = sum(a.get("duration", 0) for a in albums)
+    return round(total_secs / 60.0 * mb_per_min / 1024.0, 1)
 
-    _log(job_id, "[pipeline] tagging done — verifying structure")
-    db.update_job(job_id, status="verifying")
+
+def _build_plan(albums: list[dict], quality: int) -> dict:
+    """
+    Filter out albums already present in MUSIC_DIR, apply the per-job album cap,
+    and return a plan dict ready for JSON serialisation.
+    """
+    to_download: list[dict] = []
+    skipped_count = 0
+    for album in albums:
+        if album_already_present(
+            config.MUSIC_DIR,
+            album.get("artist", ""),
+            album.get("title", ""),
+            album.get("tracks_count") or None,
+        ):
+            skipped_count += 1
+        else:
+            to_download.append(album)
+
+    capped = False
+    cap = config.MAX_ALBUMS_PER_JOB
+    if len(to_download) > cap:
+        to_download = to_download[:cap]
+        capped = True
+
+    return {
+        "albums": to_download,
+        "skipped_existing": skipped_count,
+        "est_gb": _estimate_gb(to_download, quality),
+        "quality": quality,
+        "capped": capped,
+        "cap": cap,
+    }
+
+
+def _store_plan(job_id: int, plan: dict, label: str) -> bool:
+    """Persist plan, log summary, set status awaiting_confirm. Returns True if albums remain."""
+    count = len(plan["albums"])
+    skipped = plan["skipped_existing"]
+    est = plan["est_gb"]
+    capped = plan.get("capped", False)
+    cap_msg = f" (capped at {plan['cap']})" if capped else ""
+    _log(
+        job_id,
+        f"[pipeline/{label}] plan ready: {count} album(s) to download{cap_msg}, "
+        f"{skipped} already present, ~{est} GB estimated",
+    )
+    db.set_job_plan(job_id, json.dumps(plan))
+    db.update_job(job_id, status="awaiting_confirm")
+    if count == 0:
+        _log(job_id, f"[pipeline/{label}] nothing to download — all albums already present")
+    return count > 0
+
+
+def _download_album_list(
+    job_id: int,
+    albums: list[dict],
+    quality: int,
+    label: str,
+    cancel_check: Callable[[], bool],
+) -> tuple[int, int, int, bool, bool]:
+    """
+    Download each album with disk guard + cancel check + incremental tag/move/clean.
+    Returns (moved, skipped, failed, was_cancelled, disk_aborted).
+    """
+    total_moved = total_skipped = total_failed = 0
+
+    for i, album in enumerate(albums, 1):
+        if cancel_check():
+            _log(job_id, f"[pipeline/{label}] cancelled between albums")
+            return total_moved, total_skipped, total_failed, True, False
+
+        if not _check_disk(job_id, label):
+            db.update_job(job_id, status="error")
+            return total_moved, total_skipped, total_failed, False, True
+
+        url = album["url"]
+        artist = album.get("artist", "")
+        title = album.get("title", album["id"])
+        desc = f"{artist} — {title}" if artist else title
+        _log(job_id, f"[pipeline/{label}] ({i}/{len(albums)}) downloading: {desc}")
+        db.update_job(job_id, status="downloading")
+
+        dl_result = run_download(
+            url,
+            downloads_dir=config.DOWNLOADS_DIR,
+            quality=quality,
+            log_callback=lambda l: db.append_job_log(job_id, l),
+            job_id=job_id,
+            cancel_check=cancel_check,
+        )
+
+        if dl_result.cancelled:
+            _log(job_id, f"[pipeline/{label}] download cancelled")
+            return total_moved, total_skipped, total_failed, True, False
+
+        if not dl_result.success:
+            _log(job_id, f"[pipeline/{label}] download failed: {dl_result.error_message}")
+            total_failed += 1
+            continue
+
+        # Incremental tag + move + clean after each album so scratch stays small.
+        moved, skipped = _tag_and_move(job_id)
+        total_moved += moved
+        total_skipped += skipped
+        clean_empty_dirs(config.DOWNLOADS_DIR)
+
+    return total_moved, total_skipped, total_failed, False, False
+
+
+def _finish_bulk(job_id: int, label: str, moved: int, skipped: int, failed: int,
+                 cancelled: bool, disk_aborted: bool) -> bool:
+    """Set final status and log for a bulk download. Returns True on clean success."""
+    if cancelled:
+        db.update_job(job_id, status="cancelled")
+        _log(job_id, f"[pipeline/{label}] job cancelled")
+        return False
+    if disk_aborted:
+        return False  # status already set to error by _download_album_list
 
     stats = verify_structure(config.MUSIC_DIR)
     _log(
         job_id,
-        f"[pipeline] music dir: {stats['flac_count']} FLAC file(s), "
+        f"[pipeline/{label}] music dir: {stats['flac_count']} FLAC file(s), "
         f"{len(stats['artists'])} artist(s)",
     )
     for issue in stats["issues"]:
-        _log(job_id, f"[pipeline] warning: {issue}")
+        _log(job_id, f"[pipeline/{label}] warning: {issue}")
 
-    clean_empty_dirs(config.DOWNLOADS_DIR)
-
-    if total_moved == 0:
-        _log(job_id, "[pipeline] error: no files were moved to music dir")
+    if moved == 0:
+        _log(job_id, f"[pipeline/{label}] error: no files moved to music dir")
         db.update_job(job_id, status="error")
         return False
 
-    status = "done" if total_skipped == 0 else "done_with_warnings"
+    all_ok = failed == 0 and skipped == 0
+    status = "done" if all_ok else "done_with_warnings"
     db.update_job(job_id, status=status)
-    _log(job_id, f"[pipeline] complete (moved={total_moved}, skipped={total_skipped})")
-    return True
+    _log(
+        job_id,
+        f"[pipeline/{label}] complete (status={status}, moved={moved}, "
+        f"skipped={skipped}, failed={failed})",
+    )
+    return failed == 0
 
 
-def _simple_download_pipeline(job_id: int, url: str, label: str) -> bool:
-    """Shared pipeline for single-item downloads (track, album, discography)."""
+# ── simple (one-shot) pipelines ───────────────────────────────────────────────
+
+def _simple_download_pipeline(
+    job_id: int,
+    url: str,
+    label: str,
+    cancel_check: Callable[[], bool],
+) -> bool:
+    if not _check_disk(job_id, label):
+        db.update_job(job_id, status="error")
+        return False
+
     _log(job_id, f"[pipeline/{label}] downloading: {url}")
     db.update_job(job_id, status="downloading")
 
@@ -134,7 +276,14 @@ def _simple_download_pipeline(job_id: int, url: str, label: str) -> bool:
         downloads_dir=config.DOWNLOADS_DIR,
         quality=get_quality(),
         log_callback=lambda l: db.append_job_log(job_id, l),
+        job_id=job_id,
+        cancel_check=cancel_check,
     )
+
+    if dl_result.cancelled:
+        _log(job_id, f"[pipeline/{label}] download cancelled")
+        db.update_job(job_id, status="cancelled")
+        return False
 
     if not dl_result.success:
         _log(job_id, f"[pipeline/{label}] download failed: {dl_result.error_message}")
@@ -167,101 +316,65 @@ def _simple_download_pipeline(job_id: int, url: str, label: str) -> bool:
     return True
 
 
-def run_track_pipeline(job_id: int, track_url: str) -> bool:
-    """Download a single Qobuz track, tag, and move."""
-    return _simple_download_pipeline(job_id, track_url, "track")
+def run_playlist_pipeline(
+    job_id: int,
+    playlist_url: str,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> bool:
+    """Download a Qobuz playlist then tag+move with Picard. Returns True on success."""
+    if cancel_check is None:
+        cancel_check = lambda: False
+    return _simple_download_pipeline(job_id, playlist_url, "playlist", cancel_check)
 
 
-def run_album_pipeline(job_id: int, album_url: str) -> bool:
-    """Download a single Qobuz album, tag, and move."""
-    return _simple_download_pipeline(job_id, album_url, "album")
+def run_track_pipeline(
+    job_id: int,
+    track_url: str,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> bool:
+    if cancel_check is None:
+        cancel_check = lambda: False
+    return _simple_download_pipeline(job_id, track_url, "track", cancel_check)
 
 
-def run_discography_pipeline(job_id: int, artist_url: str) -> bool:
-    """Download a full artist discography, tag, and move."""
-    return _simple_download_pipeline(job_id, artist_url, "discography")
+def run_album_pipeline(
+    job_id: int,
+    album_url: str,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> bool:
+    if cancel_check is None:
+        cancel_check = lambda: False
+    return _simple_download_pipeline(job_id, album_url, "album", cancel_check)
 
 
-def run_expand_discographies_pipeline(job_id: int, playlist_url: str) -> bool:
-    """
-    For every track in the playlist, find its artist on Qobuz, deduplicate,
-    then download each artist's full discography, tag, and move.
-    """
-    _log(job_id, f"[pipeline/expand-disco] resolving artists from playlist: {playlist_url}")
+# ── bulk pipelines — resolve phase ────────────────────────────────────────────
+
+def run_discography_resolve(job_id: int, artist_url: str) -> bool:
+    """Resolve artist albums, build plan, set awaiting_confirm."""
+    _log(job_id, f"[pipeline/discography] resolving albums for: {artist_url}")
     db.update_job(job_id, status="resolving")
 
     token = get_token()
     if not token:
-        _log(job_id, "[pipeline/expand-disco] error: no Qobuz token configured")
+        _log(job_id, "[pipeline/discography] error: no Qobuz token configured")
         db.update_job(job_id, status="error")
         return False
 
     client = make_client(token)
-
     try:
-        artist_ids = client.playlist_to_artist_ids(playlist_url)
+        albums = client.discography_to_album_plan(artist_url)
     except Exception as exc:
-        _log(job_id, f"[pipeline/expand-disco] failed to resolve artists: {exc}")
+        _log(job_id, f"[pipeline/discography] failed to resolve albums: {exc}")
         db.update_job(job_id, status="error")
         return False
 
-    _log(job_id, f"[pipeline/expand-disco] {len(artist_ids)} unique artist(s) to download")
-
-    quality = get_quality()
-    dl_ok = True
-    for idx, artist_id in enumerate(artist_ids, 1):
-        url = artist_url_from_id(artist_id)
-        _log(job_id, f"[pipeline/expand-disco] ({idx}/{len(artist_ids)}) downloading {url}")
-        db.update_job(job_id, status="downloading")
-
-        dl_result = run_download(
-            url,
-            downloads_dir=config.DOWNLOADS_DIR,
-            quality=quality,
-            log_callback=lambda l: db.append_job_log(job_id, l),
-        )
-        if not dl_result.success:
-            _log(
-                job_id,
-                f"[pipeline/expand-disco] artist {artist_id} download failed: "
-                f"{dl_result.error_message}",
-            )
-            dl_ok = False
-
-    _log(job_id, "[pipeline/expand-disco] all downloads done — starting per-album tagging")
-
-    total_moved, total_skipped = _tag_and_move(job_id)
-
-    stats = verify_structure(config.MUSIC_DIR)
-    _log(
-        job_id,
-        f"[pipeline/expand-disco] music dir: {stats['flac_count']} FLAC file(s), "
-        f"{len(stats['artists'])} artist(s)",
-    )
-
-    clean_empty_dirs(config.DOWNLOADS_DIR)
-
-    if total_moved == 0:
-        _log(job_id, "[pipeline/expand-disco] error: no files were moved to music dir")
-        db.update_job(job_id, status="error")
-        return False
-
-    all_ok = dl_ok and total_skipped == 0
-    final_status = "done" if all_ok else "done_with_warnings"
-    db.update_job(job_id, status=final_status)
-    _log(
-        job_id,
-        f"[pipeline/expand-disco] complete (status={final_status}, "
-        f"moved={total_moved}, skipped={total_skipped})",
-    )
-    return dl_ok
+    _log(job_id, f"[pipeline/discography] found {len(albums)} album(s) on Qobuz")
+    plan = _build_plan(albums, get_quality())
+    return _store_plan(job_id, plan, "discography")
 
 
-def run_expand_albums_pipeline(job_id: int, playlist_url: str) -> bool:
-    """
-    For every song in the playlist, find its album on Qobuz, deduplicate, then
-    download each full album, tag, and move.
-    """
+def run_expand_albums_resolve(job_id: int, playlist_url: str) -> bool:
+    """Resolve playlist → album list, build plan, set awaiting_confirm."""
     _log(job_id, f"[pipeline/expand] resolving albums from playlist: {playlist_url}")
     db.update_job(job_id, status="resolving")
 
@@ -272,61 +385,93 @@ def run_expand_albums_pipeline(job_id: int, playlist_url: str) -> bool:
         return False
 
     client = make_client(token)
-
     try:
-        album_ids = client.playlist_to_album_ids(playlist_url)
+        albums = client.playlist_to_album_plan_from_tracks(playlist_url)
     except Exception as exc:
         _log(job_id, f"[pipeline/expand] failed to resolve albums: {exc}")
         db.update_job(job_id, status="error")
         return False
 
-    _log(job_id, f"[pipeline/expand] {len(album_ids)} unique album(s) to download")
+    _log(job_id, f"[pipeline/expand] found {len(albums)} unique album(s) in playlist")
+    plan = _build_plan(albums, get_quality())
+    return _store_plan(job_id, plan, "expand")
 
-    quality = get_quality()
-    dl_ok = True
-    for idx, album_id in enumerate(album_ids, 1):
-        album_url = album_url_from_id(album_id)
-        _log(job_id, f"[pipeline/expand] ({idx}/{len(album_ids)}) downloading {album_url}")
-        db.update_job(job_id, status="downloading")
 
-        dl_result = run_download(
-            album_url,
-            downloads_dir=config.DOWNLOADS_DIR,
-            quality=quality,
-            log_callback=lambda l: db.append_job_log(job_id, l),
-        )
-        if not dl_result.success:
-            _log(
-                job_id,
-                f"[pipeline/expand] album {album_id} download failed: "
-                f"{dl_result.error_message}",
-            )
-            dl_ok = False
+def run_expand_discographies_resolve(job_id: int, playlist_url: str) -> bool:
+    """Resolve playlist → per-artist catalogs → album list, build plan, set awaiting_confirm."""
+    _log(job_id, f"[pipeline/expand-disco] resolving artist catalogs from playlist: {playlist_url}")
+    db.update_job(job_id, status="resolving")
 
-    _log(job_id, "[pipeline/expand] all downloads done — starting per-album tagging")
-
-    total_moved, total_skipped = _tag_and_move(job_id)
-
-    stats = verify_structure(config.MUSIC_DIR)
-    _log(
-        job_id,
-        f"[pipeline/expand] music dir: {stats['flac_count']} FLAC file(s), "
-        f"{len(stats['artists'])} artist(s)",
-    )
-
-    clean_empty_dirs(config.DOWNLOADS_DIR)
-
-    if total_moved == 0:
-        _log(job_id, "[pipeline/expand] error: no files were moved to music dir")
+    token = get_token()
+    if not token:
+        _log(job_id, "[pipeline/expand-disco] error: no Qobuz token configured")
         db.update_job(job_id, status="error")
         return False
 
-    all_ok = dl_ok and total_skipped == 0
-    final_status = "done" if all_ok else "done_with_warnings"
-    db.update_job(job_id, status=final_status)
-    _log(
-        job_id,
-        f"[pipeline/expand] complete (status={final_status}, "
-        f"moved={total_moved}, skipped={total_skipped})",
+    client = make_client(token)
+    try:
+        albums = client.playlist_to_album_plan(playlist_url)
+    except Exception as exc:
+        _log(job_id, f"[pipeline/expand-disco] failed to resolve artists: {exc}")
+        db.update_job(job_id, status="error")
+        return False
+
+    _log(job_id, f"[pipeline/expand-disco] found {len(albums)} unique album(s) across all artists")
+    plan = _build_plan(albums, get_quality())
+    return _store_plan(job_id, plan, "expand-disco")
+
+
+# ── bulk pipelines — download phase ──────────────────────────────────────────
+
+def _run_bulk_download(job_id: int, label: str, cancel_check: Callable[[], bool]) -> bool:
+    """Shared download phase: read plan from DB, run _download_album_list."""
+    job = db.get_job(job_id)
+    if not job:
+        return False
+    plan = json.loads(job.get("plan") or "{}")
+    albums = plan.get("albums", [])
+    quality = plan.get("quality") or get_quality()
+
+    if not albums:
+        _log(job_id, f"[pipeline/{label}] no albums in plan — nothing to download")
+        db.update_job(job_id, status="done")
+        return True
+
+    _log(job_id, f"[pipeline/{label}] starting download of {len(albums)} album(s)")
+
+    moved, skipped, failed, cancelled, disk_aborted = _download_album_list(
+        job_id, albums, quality, label, cancel_check
     )
-    return dl_ok
+    return _finish_bulk(job_id, label, moved, skipped, failed, cancelled, disk_aborted)
+
+
+def run_discography_download(job_id: int, cancel_check: Callable[[], bool]) -> bool:
+    return _run_bulk_download(job_id, "discography", cancel_check)
+
+
+def run_expand_albums_download(job_id: int, cancel_check: Callable[[], bool]) -> bool:
+    return _run_bulk_download(job_id, "expand", cancel_check)
+
+
+def run_expand_discographies_download(job_id: int, cancel_check: Callable[[], bool]) -> bool:
+    return _run_bulk_download(job_id, "expand-disco", cancel_check)
+
+
+# ── legacy aliases (kept so existing tests that import these names still work) ─
+
+def run_discography_pipeline(job_id: int, artist_url: str) -> bool:
+    """Deprecated: use run_discography_resolve / run_discography_download."""
+    run_discography_resolve(job_id, artist_url)
+    return False  # caller must confirm via API
+
+
+def run_expand_albums_pipeline(job_id: int, playlist_url: str) -> bool:
+    """Deprecated: use run_expand_albums_resolve / run_expand_albums_download."""
+    run_expand_albums_resolve(job_id, playlist_url)
+    return False
+
+
+def run_expand_discographies_pipeline(job_id: int, playlist_url: str) -> bool:
+    """Deprecated: use run_expand_discographies_resolve / run_expand_discographies_download."""
+    run_expand_discographies_resolve(job_id, playlist_url)
+    return False

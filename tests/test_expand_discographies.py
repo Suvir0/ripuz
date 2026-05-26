@@ -1,10 +1,13 @@
 """
-Tests for the expand_discographies feature:
-  - QobuzClient.playlist_to_artist_ids()
-  - run_expand_discographies_pipeline()
+Tests for the expand_discographies two-phase pipeline:
+  - QobuzClient.playlist_to_artist_ids()        — unchanged, keep existing tests
+  - QobuzClient.playlist_to_album_plan()        — new: resolves full catalogs
+  - run_expand_discographies_resolve()           — API phase, sets awaiting_confirm
+  - run_expand_discographies_download()          — download phase, album-by-album
   - _process_job() routing
   - API endpoint acceptance
 """
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +15,7 @@ import pytest
 
 from app import db
 from app.qobuz_client import QobuzClient
-from app.pipeline import run_expand_discographies_pipeline
+from app.pipeline import run_expand_discographies_resolve, run_expand_discographies_download
 from app.jobs import _process_job
 from app.qobuz_cli import DownloadResult
 from app.picard import PicardResult
@@ -27,6 +30,10 @@ def _ok_download():
 
 def _fail_download(msg="dl error"):
     return DownloadResult(success=False, error_message=msg)
+
+
+def _cancelled_download():
+    return DownloadResult(success=False, cancelled=True)
 
 
 def _ok_picard():
@@ -56,6 +63,37 @@ def _track(performer_id=None, album_artist_id=None, track_id="t1"):
     if album_artist_id is not None:
         track["album"] = {"artist": {"id": album_artist_id}}
     return track
+
+
+def _fake_albums(count=2):
+    return [
+        {
+            "id": f"alb{i}",
+            "url": f"https://play.qobuz.com/album/alb{i}",
+            "title": f"Album {i}",
+            "artist": f"Artist{i}",
+            "tracks_count": 10,
+            "duration": 2400,
+        }
+        for i in range(count)
+    ]
+
+
+def _setup_plan(job_id, albums, quality=27):
+    plan = {
+        "albums": albums,
+        "skipped_existing": 0,
+        "est_gb": 1.0,
+        "quality": quality,
+        "capped": False,
+        "cap": 300,
+    }
+    db.set_job_plan(job_id, json.dumps(plan))
+    db.update_job(job_id, status="confirmed")
+
+
+def _big_disk(path):
+    m = MagicMock(); m.free = 500 * 1024**3; return m
 
 
 # ── Section A: QobuzClient.playlist_to_artist_ids() ───────────────────────────
@@ -108,7 +146,6 @@ def test_playlist_to_artist_ids_empty_playlist():
 
 def test_playlist_to_artist_ids_skips_tracks_without_artist():
     client = QobuzClient("fake_token")
-    # Track with no performer and no album artist
     tracks = [{"id": "t1", "album": {}, "title": "orphan track"}]
     with patch.object(client, "get_playlist_tracks", return_value=tracks):
         ids = client.playlist_to_artist_ids("https://play.qobuz.com/playlist/1")
@@ -127,204 +164,267 @@ def test_playlist_to_artist_ids_preserves_insertion_order():
     assert ids == ["z99", "a01", "m50"]
 
 
-# ── Section B: run_expand_discographies_pipeline() ────────────────────────────
+# ── Section B: resolve phase ───────────────────────────────────────────────────
 
-def test_expand_discographies_success(tmp_dirs):
+def test_resolve_sets_awaiting_confirm():
     import app.settings_store as ss
     ss.save_settings("fake_token")
 
     job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/10")
     mock_client = MagicMock()
-    mock_client.playlist_to_artist_ids.return_value = ["artist1", "artist2"]
-    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
+    mock_client.playlist_to_album_plan.return_value = _fake_albums(3)
 
     with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
-         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
-         patch("app.pipeline.move_album", return_value=_ok_move()), \
-         patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": ["artist1", "artist2"], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        ok = run_expand_discographies_pipeline(job_id, "https://play.qobuz.com/playlist/10")
+         patch("app.pipeline.album_already_present", return_value=False):
+        ok = run_expand_discographies_resolve(job_id, "https://play.qobuz.com/playlist/10")
 
     assert ok is True
-    assert db.get_job(job_id)["status"] == "done"
+    job = db.get_job(job_id)
+    assert job["status"] == "awaiting_confirm"
+    plan = json.loads(job["plan"])
+    assert len(plan["albums"]) == 3
 
 
-def test_expand_discographies_downloads_each_artist(tmp_dirs):
+def test_resolve_skips_existing_albums():
     import app.settings_store as ss
     ss.save_settings("fake_token")
 
     job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/11")
     mock_client = MagicMock()
-    mock_client.playlist_to_artist_ids.return_value = ["a1", "a2", "a3"]
-    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
-    download_calls = []
-
-    def record_download(url, **kwargs):
-        download_calls.append(url)
-        return _ok_download()
+    mock_client.playlist_to_album_plan.return_value = _fake_albums(4)
 
     with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", side_effect=record_download), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
-         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
-         patch("app.pipeline.move_album", return_value=_ok_move()), \
-         patch("app.pipeline.verify_structure", return_value={"flac_count": 3, "artists": [], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        run_expand_discographies_pipeline(job_id, "https://play.qobuz.com/playlist/11")
-
-    assert len(download_calls) == 3
-    assert all("play.qobuz.com/artist/" in u for u in download_calls)
-
-
-def test_expand_discographies_continues_after_one_failure(tmp_dirs):
-    import app.settings_store as ss
-    ss.save_settings("fake_token")
-
-    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/12")
-    mock_client = MagicMock()
-    mock_client.playlist_to_artist_ids.return_value = ["good1", "bad1", "good2"]
-    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
-
-    def download_by_url(url, **kwargs):
-        if "bad1" in url:
-            return _fail_download("geo-blocked")
-        return _ok_download()
-
-    with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", side_effect=download_by_url), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
-         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
-         patch("app.pipeline.move_album", return_value=_ok_move()), \
-         patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": [], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        ok = run_expand_discographies_pipeline(job_id, "https://play.qobuz.com/playlist/12")
+         patch("app.pipeline.album_already_present", return_value=True):
+        ok = run_expand_discographies_resolve(job_id, "https://play.qobuz.com/playlist/11")
 
     assert ok is False
-    assert db.get_job(job_id)["status"] == "done_with_warnings"
+    plan = json.loads(db.get_job(job_id)["plan"])
+    assert len(plan["albums"]) == 0
+    assert plan["skipped_existing"] == 4
 
 
-def test_expand_discographies_no_token():
+def test_resolve_no_token():
     import app.settings_store as ss
     ss.save_settings("")
 
     job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/13")
-    ok = run_expand_discographies_pipeline(job_id, "https://play.qobuz.com/playlist/13")
+    ok = run_expand_discographies_resolve(job_id, "https://play.qobuz.com/playlist/13")
     assert ok is False
     assert db.get_job(job_id)["status"] == "error"
 
 
-def test_expand_discographies_client_exception():
+def test_resolve_client_exception():
     import app.settings_store as ss
     ss.save_settings("fake_token")
 
     job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/14")
     mock_client = MagicMock()
-    mock_client.playlist_to_artist_ids.side_effect = RuntimeError("network timeout")
+    mock_client.playlist_to_album_plan.side_effect = RuntimeError("network timeout")
 
     with patch("app.pipeline.make_client", return_value=mock_client):
-        ok = run_expand_discographies_pipeline(job_id, "https://play.qobuz.com/playlist/14")
+        ok = run_expand_discographies_resolve(job_id, "https://play.qobuz.com/playlist/14")
 
     assert ok is False
     assert db.get_job(job_id)["status"] == "error"
 
 
-def test_expand_discographies_no_files_moved(tmp_dirs):
-    import app.settings_store as ss
-    ss.save_settings("fake_token")
-
-    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/15")
-    mock_client = MagicMock()
-    mock_client.playlist_to_artist_ids.return_value = ["a1"]
-    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
-
-    with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
-         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
-         patch("app.pipeline.move_album", return_value=_empty_move()), \
-         patch("app.pipeline.verify_structure", return_value={"flac_count": 0, "artists": [], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        ok = run_expand_discographies_pipeline(job_id, "https://play.qobuz.com/playlist/15")
-
-    assert ok is False
-    assert db.get_job(job_id)["status"] == "error"
-
-
-def test_expand_discographies_logs_artist_count(tmp_dirs):
+def test_resolve_logs_album_count():
     import app.settings_store as ss
     ss.save_settings("fake_token")
 
     job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/16")
     mock_client = MagicMock()
-    mock_client.playlist_to_artist_ids.return_value = ["a1", "a2", "a3"]
-    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
+    mock_client.playlist_to_album_plan.return_value = _fake_albums(3)
 
     with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
-         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
-         patch("app.pipeline.move_album", return_value=_ok_move()), \
-         patch("app.pipeline.verify_structure", return_value={"flac_count": 3, "artists": [], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        run_expand_discographies_pipeline(job_id, "https://play.qobuz.com/playlist/16")
+         patch("app.pipeline.album_already_present", return_value=False):
+        run_expand_discographies_resolve(job_id, "https://play.qobuz.com/playlist/16")
 
     log = db.get_job(job_id)["log"]
     assert "3" in log
 
 
-def test_expand_discographies_single_artist_done(tmp_dirs):
-    import app.settings_store as ss
-    ss.save_settings("fake_token")
+# ── Section C: download phase ──────────────────────────────────────────────────
 
-    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/17")
-    mock_client = MagicMock()
-    mock_client.playlist_to_artist_ids.return_value = ["solo_artist"]
+def test_download_success(tmp_dirs):
+    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/20")
+    albums = _fake_albums(2)
     album_dirs = _two_album_dirs(tmp_dirs / "downloads")
+    _setup_plan(job_id, albums)
 
-    with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+    dirs_iter = iter([[d] for d in album_dirs])
+
+    with patch("app.pipeline.run_download", return_value=_ok_download()), \
+         patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter)), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
-         patch("app.pipeline.move_album", return_value=_ok_move(2)), \
-         patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": ["solo_artist"], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        ok = run_expand_discographies_pipeline(job_id, "https://play.qobuz.com/playlist/17")
+         patch("app.pipeline.move_album", return_value=_ok_move()), \
+         patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": ["a"], "issues": []}), \
+         patch("app.pipeline.clean_empty_dirs"), \
+         patch("app.pipeline.shutil.disk_usage", side_effect=_big_disk):
+        ok = run_expand_discographies_download(job_id, lambda: False)
 
     assert ok is True
     assert db.get_job(job_id)["status"] == "done"
 
 
-def test_expand_discographies_all_artists_fail(tmp_dirs):
-    import app.settings_store as ss
-    ss.save_settings("fake_token")
+def test_download_continues_after_one_failure(tmp_dirs):
+    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/21")
+    albums = _fake_albums(3)
+    album_dirs = [tmp_dirs / "downloads" / f"d{i}" for i in range(3)]
+    for d in album_dirs:
+        d.mkdir(parents=True, exist_ok=True)
+    _setup_plan(job_id, albums)
 
-    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/18")
-    mock_client = MagicMock()
-    mock_client.playlist_to_artist_ids.return_value = ["bad1", "bad2"]
+    call_count = [0]
+    def maybe_fail(url, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 2:
+            return _fail_download("geo-blocked")
+        return _ok_download()
+
+    dirs_iter = iter([[d] for d in album_dirs])
+
+    with patch("app.pipeline.run_download", side_effect=maybe_fail), \
+         patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter, [])), \
+         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
+         patch("app.pipeline.move_album", return_value=_ok_move()), \
+         patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": [], "issues": []}), \
+         patch("app.pipeline.clean_empty_dirs"), \
+         patch("app.pipeline.shutil.disk_usage", side_effect=_big_disk):
+        ok = run_expand_discographies_download(job_id, lambda: False)
+
+    assert ok is False
+    assert db.get_job(job_id)["status"] == "done_with_warnings"
+
+
+def test_download_no_files_moved_is_error(tmp_dirs):
+    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/22")
+    albums = _fake_albums(1)
     album_dirs = _two_album_dirs(tmp_dirs / "downloads")
+    _setup_plan(job_id, albums)
 
-    with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", return_value=_fail_download("unavailable")), \
+    with patch("app.pipeline.run_download", return_value=_ok_download()), \
          patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
+         patch("app.pipeline.move_album", return_value=_empty_move()), \
+         patch("app.pipeline.verify_structure", return_value={"flac_count": 0, "artists": [], "issues": []}), \
+         patch("app.pipeline.clean_empty_dirs"), \
+         patch("app.pipeline.shutil.disk_usage", side_effect=_big_disk):
+        ok = run_expand_discographies_download(job_id, lambda: False)
+
+    assert ok is False
+    assert db.get_job(job_id)["status"] == "error"
+
+
+def test_download_cancelled(tmp_dirs):
+    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/23")
+    albums = _fake_albums(2)
+    _setup_plan(job_id, albums)
+
+    with patch("app.pipeline.run_download", return_value=_cancelled_download()), \
+         patch("app.pipeline.list_album_dirs", return_value=[]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 0, "artists": [], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        ok = run_expand_discographies_pipeline(job_id, "https://play.qobuz.com/playlist/18")
+         patch("app.pipeline.clean_empty_dirs"), \
+         patch("app.pipeline.shutil.disk_usage", side_effect=_big_disk):
+        ok = run_expand_discographies_download(job_id, lambda: True)
 
     assert ok is False
+    assert db.get_job(job_id)["status"] == "cancelled"
 
 
-# ── Section C: routing and API ─────────────────────────────────────────────────
+def test_download_disk_guard_aborts():
+    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/24")
+    albums = _fake_albums(1)
+    _setup_plan(job_id, albums)
+
+    def low_disk(path):
+        m = MagicMock(); m.free = 1 * 1024**3; return m
+
+    with patch("app.pipeline.run_download", return_value=_ok_download()), \
+         patch("app.pipeline.shutil.disk_usage", side_effect=low_disk):
+        ok = run_expand_discographies_download(job_id, lambda: False)
+
+    assert ok is False
+    assert db.get_job(job_id)["status"] == "error"
+
+
+def test_download_empty_plan_is_done():
+    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/25")
+    _setup_plan(job_id, [])
+
+    ok = run_expand_discographies_download(job_id, lambda: False)
+
+    assert ok is True
+    assert db.get_job(job_id)["status"] == "done"
+
+
+def test_download_downloads_each_album(tmp_dirs):
+    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/26")
+    albums = _fake_albums(3)
+    album_dirs = [tmp_dirs / "downloads" / f"d{i}" for i in range(3)]
+    for d in album_dirs:
+        d.mkdir(parents=True, exist_ok=True)
+    _setup_plan(job_id, albums)
+
+    download_urls = []
+    dirs_iter = iter([[d] for d in album_dirs])
+
+    def record(url, **kwargs):
+        download_urls.append(url)
+        return _ok_download()
+
+    with patch("app.pipeline.run_download", side_effect=record), \
+         patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter)), \
+         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
+         patch("app.pipeline.move_album", return_value=_ok_move()), \
+         patch("app.pipeline.verify_structure", return_value={"flac_count": 3, "artists": [], "issues": []}), \
+         patch("app.pipeline.clean_empty_dirs"), \
+         patch("app.pipeline.shutil.disk_usage", side_effect=_big_disk):
+        run_expand_discographies_download(job_id, lambda: False)
+
+    assert len(download_urls) == 3
+    assert all("play.qobuz.com/album/" in u for u in download_urls)
+
+
+def test_download_single_artist_done(tmp_dirs):
+    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/27")
+    albums = _fake_albums(1)
+    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
+    _setup_plan(job_id, albums)
+
+    with patch("app.pipeline.run_download", return_value=_ok_download()), \
+         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
+         patch("app.pipeline.move_album", return_value=_ok_move(2)), \
+         patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": ["solo"], "issues": []}), \
+         patch("app.pipeline.clean_empty_dirs"), \
+         patch("app.pipeline.shutil.disk_usage", side_effect=_big_disk):
+        ok = run_expand_discographies_download(job_id, lambda: False)
+
+    assert ok is True
+    assert db.get_job(job_id)["status"] == "done"
+
+
+# ── Section D: routing and API ─────────────────────────────────────────────────
 
 def test_process_job_routes_expand_discographies():
     job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/x")
     job = db.get_job(job_id)
-    with patch("app.jobs.run_expand_discographies_pipeline", return_value=True) as mock_fn:
+    with patch("app.jobs.run_expand_discographies_resolve", return_value=True) as mock_fn:
         _process_job(job)
     mock_fn.assert_called_once_with(job_id, "https://play.qobuz.com/playlist/x")
+
+
+def test_process_job_routes_expand_discographies_confirmed():
+    from unittest.mock import ANY
+    job_id = db.create_job("expand_discographies", "https://play.qobuz.com/playlist/x2")
+    db.update_job(job_id, status="confirmed")
+    job = db.get_job(job_id)
+    with patch("app.jobs.run_expand_discographies_download", return_value=True) as mock_fn:
+        _process_job(job)
+    mock_fn.assert_called_once_with(job_id, ANY)
 
 
 def test_api_create_job_expand_discographies():

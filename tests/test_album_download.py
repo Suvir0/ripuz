@@ -192,11 +192,12 @@ def test_album_pipeline_skipped_files_is_done_with_warnings(tmp_dirs):
 # ── _process_job() routing ─────────────────────────────────────────────────────
 
 def test_process_job_routes_album():
+    from unittest.mock import ANY
     job_id = db.create_job("album", "https://play.qobuz.com/album/abc")
     job = db.get_job(job_id)
     with patch("app.jobs.run_album_pipeline", return_value=True) as mock_fn:
         _process_job(job)
-    mock_fn.assert_called_once_with(job_id, "https://play.qobuz.com/album/abc")
+    mock_fn.assert_called_once_with(job_id, "https://play.qobuz.com/album/abc", ANY)
 
 
 # ── API endpoint ───────────────────────────────────────────────────────────────

@@ -5,6 +5,8 @@ Also cleans up empty directories left behind by Picard.
 import shutil
 from pathlib import Path
 
+from app.mover import sanitize_path
+
 
 def find_flac_files(root: Path) -> list[Path]:
     return sorted(root.rglob("*.flac")) + sorted(root.rglob("*.FLAC"))
@@ -36,6 +38,30 @@ def clean_empty_dirs(root: Path) -> list[Path]:
             except OSError:
                 pass
     return removed
+
+
+def album_already_present(
+    music_dir: Path,
+    artist: str,
+    album: str,
+    expected_tracks: int | None = None,
+) -> bool:
+    """
+    Return True if the album appears to already exist in music_dir.
+    Uses the same sanitization as move_album so the path matches what was written.
+    When expected_tracks is given, also requires that many FLAC files be present.
+    """
+    if not artist or not album:
+        return False
+    album_dir = music_dir / sanitize_path(artist) / sanitize_path(album)
+    if not album_dir.is_dir():
+        return False
+    flacs = find_flac_files(album_dir)
+    if not flacs:
+        return False
+    if expected_tracks and len(flacs) < expected_tracks:
+        return False
+    return True
 
 
 def verify_structure(music_dir: Path, min_flac: int = 0) -> dict:

@@ -143,20 +143,45 @@ document.getElementById('add-form').addEventListener('submit', async (e) => {
 
 /* ── jobs ───────────────────────────────────────────────────────── */
 const STATUS_MAP = {
-  queued:             { label: 'queued',      cls: 'pill-queued'  },
-  resolving:          { label: 'resolving',   cls: 'pill-running' },
-  downloading:        { label: 'downloading', cls: 'pill-running' },
-  tagging:            { label: 'tagging',     cls: 'pill-tagging' },
-  verifying:          { label: 'verifying',   cls: 'pill-tagging' },
-  done:               { label: 'done',        cls: 'pill-done'    },
-  done_with_warnings: { label: 'done · warn', cls: 'pill-warn'    },
-  error:              { label: 'error',       cls: 'pill-error'   },
+  queued:             { label: 'queued',      cls: 'pill-queued'   },
+  resolving:          { label: 'resolving',   cls: 'pill-running'  },
+  awaiting_confirm:   { label: 'review',      cls: 'pill-review'   },
+  confirmed:          { label: 'confirmed',   cls: 'pill-queued'   },
+  downloading:        { label: 'downloading', cls: 'pill-running'  },
+  tagging:            { label: 'tagging',     cls: 'pill-tagging'  },
+  verifying:          { label: 'verifying',   cls: 'pill-tagging'  },
+  cancelling:         { label: 'cancelling',  cls: 'pill-error'    },
+  cancelled:          { label: 'cancelled',   cls: 'pill-cancelled'},
+  done:               { label: 'done',        cls: 'pill-done'     },
+  done_with_warnings: { label: 'done · warn', cls: 'pill-warn'     },
+  error:              { label: 'error',       cls: 'pill-error'    },
 };
 
-const ACTIVE_STATUSES = new Set(['queued', 'resolving', 'downloading', 'tagging', 'verifying']);
+// Statuses that should keep the worker-running dot lit and the log modal auto-refreshing.
+const ACTIVE_STATUSES = new Set([
+  'queued', 'resolving', 'awaiting_confirm', 'confirmed',
+  'downloading', 'tagging', 'verifying', 'cancelling',
+]);
+
+// Statuses where we show a Cancel button.
+const CANCELLABLE_STATUSES = new Set([
+  'queued', 'resolving', 'awaiting_confirm', 'confirmed',
+  'downloading', 'tagging', 'verifying',
+]);
 
 let cachedJobs = [];
 let currentFilter = 'all';
+
+function formatPlan(planJson) {
+  if (!planJson) return '';
+  let plan;
+  try { plan = JSON.parse(planJson); } catch { return ''; }
+  const albums = plan.albums || [];
+  const skipped = plan.skipped_existing || 0;
+  const est = plan.est_gb || 0;
+  const capped = plan.capped ? ` · capped at ${plan.cap}` : '';
+  return `${albums.length} album(s) to download${capped} · ${skipped} already present · ~${est} GB`;
+}
 
 function renderJobs() {
   const container = document.getElementById('jobs-list');
@@ -176,8 +201,26 @@ function renderJobs() {
   container.innerHTML = filtered.map(job => {
     const s = STATUS_MAP[job.status] || { label: job.status, cls: 'pill-queued' };
     const label = typeLabel(job.type);
+    const isAwaitingConfirm = job.status === 'awaiting_confirm';
+    const isCancellable = CANCELLABLE_STATUSES.has(job.status);
+
+    const planSummary = isAwaitingConfirm ? formatPlan(job.plan) : '';
+
+    const confirmRow = isAwaitingConfirm ? `
+      <div class="job-confirm-row">
+        <span class="job-plan-summary">${escHtml(planSummary)}</span>
+        <div class="job-confirm-btns">
+          <button class="btn btn-confirm" onclick="confirmJob(${job.id})">Confirm download</button>
+          <button class="btn btn-cancel-job" onclick="cancelJob(${job.id})">Cancel</button>
+        </div>
+      </div>` : '';
+
+    const cancelBtn = (!isAwaitingConfirm && isCancellable)
+      ? `<button class="job-cancel-btn" onclick="cancelJob(${job.id})" title="Cancel job">✕</button>`
+      : '';
+
     return `
-      <div class="job-card">
+      <div class="job-card${isAwaitingConfirm ? ' job-card--review' : ''}">
         <div class="job-num">#${String(job.id).padStart(3, '0')}</div>
         <div class="job-main">
           <div class="job-title">${typeIcon(job.type)} ${escHtml(label)}</div>
@@ -185,7 +228,9 @@ function renderJobs() {
           <div class="job-meta"><span>${escHtml(job.created_at)}</span></div>
         </div>
         <span class="pill ${s.cls}">${s.label}</span>
+        ${cancelBtn}
         <button class="job-log-btn" onclick="showLog(${job.id})">Log</button>
+        ${confirmRow}
       </div>
     `;
   }).join('');
@@ -207,6 +252,34 @@ async function loadJobs() {
       `<div class="empty"><span class="mono">error</span>Failed to load jobs.</div>`;
   }
 }
+
+window.confirmJob = async function(jobId) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/confirm`, { method: 'POST' });
+    if (res.ok) {
+      await loadJobs();
+    } else {
+      const d = await res.json();
+      alert(`Could not confirm: ${d.error || res.status}`);
+    }
+  } catch (err) {
+    alert(`Error: ${err}`);
+  }
+};
+
+window.cancelJob = async function(jobId) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' });
+    if (res.ok) {
+      await loadJobs();
+    } else {
+      const d = await res.json();
+      alert(`Could not cancel: ${d.error || res.status}`);
+    }
+  } catch (err) {
+    alert(`Error: ${err}`);
+  }
+};
 
 document.querySelectorAll('.jobs-filter button').forEach(b => {
   b.addEventListener('click', () => {
@@ -236,6 +309,26 @@ function renderLogContent(data) {
   const job = cachedJobs.find(j => j.id === data.id) || data;
   document.getElementById('modal-sub').textContent =
     `${typeLabel(job.type)} · ${job.status}`;
+
+  // Show plan summary in modal for awaiting_confirm jobs.
+  const planBar = document.getElementById('modal-plan-bar');
+  const planEl = document.getElementById('modal-plan');
+  if (job.status === 'awaiting_confirm' && job.plan) {
+    planEl.textContent = formatPlan(job.plan);
+    planBar.style.display = '';
+  } else {
+    planBar.style.display = 'none';
+  }
+
+  // Show confirm/cancel buttons in modal for awaiting_confirm jobs.
+  const modalActions = document.getElementById('modal-actions');
+  if (job.status === 'awaiting_confirm') {
+    modalActions.style.display = 'flex';
+    modalActions.dataset.jobId = data.id;
+  } else {
+    modalActions.style.display = 'none';
+  }
+
   const lines = (data.log || '(no log yet)').split('\n');
   const atBottom = logEl.parentElement.scrollHeight - logEl.parentElement.scrollTop
     <= logEl.parentElement.clientHeight + 40;
@@ -253,7 +346,7 @@ async function refreshModalLog() {
     const res = await fetch('/api/jobs/' + currentLogJobId);
     const data = await res.json();
     renderLogContent(data);
-  } catch (e) { /* silent — don't clobber the log on transient error */ }
+  } catch (e) { /* silent */ }
 }
 
 window.showLog = async function(jobId) {
@@ -282,6 +375,18 @@ document.getElementById('job-modal').addEventListener('click', e => {
   if (e.target.id === 'job-modal') closeModal();
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+// Modal confirm/cancel buttons
+document.getElementById('modal-confirm-btn').addEventListener('click', async () => {
+  const jobId = parseInt(document.getElementById('modal-actions').dataset.jobId, 10);
+  await window.confirmJob(jobId);
+  closeModal();
+});
+document.getElementById('modal-cancel-btn').addEventListener('click', async () => {
+  const jobId = parseInt(document.getElementById('modal-actions').dataset.jobId, 10);
+  await window.cancelJob(jobId);
+  closeModal();
+});
 
 /* ── auto-refresh ───────────────────────────────────────────────── */
 setInterval(() => {

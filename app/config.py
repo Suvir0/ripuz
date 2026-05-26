@@ -20,6 +20,12 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
 # Qobuz quality: 5=MP3, 6=FLAC 16/44, 7=FLAC 24/96, 27=FLAC 24/192 (max)
 QOBUZ_QUALITY = int(os.getenv("QOBUZ_QUALITY", "27"))
 
+# Disk safety guard: abort a bulk download if free space on DOWNLOADS_DIR drops below this.
+DISK_FLOOR_GB = float(os.getenv("DISK_FLOOR_GB", "20"))
+
+# Cap on total albums a single bulk job will download (prevents runaway on large catalogs).
+MAX_ALBUMS_PER_JOB = int(os.getenv("MAX_ALBUMS_PER_JOB", "300"))
+
 # Optional HTTP Basic Auth — leave RIPUZ_AUTH_PASS empty to disable (default).
 RIPUZ_AUTH_USER = os.getenv("RIPUZ_AUTH_USER", "ripuz")
 RIPUZ_AUTH_PASS = os.getenv("RIPUZ_AUTH_PASS", "")

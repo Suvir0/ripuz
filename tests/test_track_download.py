@@ -189,11 +189,12 @@ def test_track_pipeline_skipped_file_is_done_with_warnings(tmp_dirs):
 # ── _process_job() routing ─────────────────────────────────────────────────────
 
 def test_process_job_routes_track():
+    from unittest.mock import ANY
     job_id = db.create_job("track", "https://play.qobuz.com/track/abc")
     job = db.get_job(job_id)
     with patch("app.jobs.run_track_pipeline", return_value=True) as mock_fn:
         _process_job(job)
-    mock_fn.assert_called_once_with(job_id, "https://play.qobuz.com/track/abc")
+    mock_fn.assert_called_once_with(job_id, "https://play.qobuz.com/track/abc", ANY)
 
 
 # ── API endpoint ───────────────────────────────────────────────────────────────

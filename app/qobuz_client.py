@@ -1,7 +1,7 @@
 """
-Thin wrapper around qobuz_dl.qopy.Client for playlist/track/album lookup.
-Only used by the expand-albums pipeline path; actual downloading is done by
-qobuz-dl CLI subprocess in qobuz_cli.py.
+Thin wrapper around qobuz_dl.qopy.Client for playlist/track/album/artist lookup.
+Only used by the expand and discography pipeline paths; actual downloading is done
+by qobuz-dl CLI subprocess in qobuz_cli.py.
 """
 import logging
 import re
@@ -44,6 +44,21 @@ def _extract_id(url_or_id: str) -> str:
     raise ValueError("invalid qobuz id")
 
 
+def _album_dict(album: dict) -> dict:
+    """Normalise a raw album object from the Qobuz API into our plan format."""
+    album_id = str(album.get("id", ""))
+    artist_obj = album.get("artist") or {}
+    artist_name = artist_obj.get("name", "") if isinstance(artist_obj, dict) else ""
+    return {
+        "id": album_id,
+        "url": album_url_from_id(album_id),
+        "title": album.get("title", ""),
+        "artist": artist_name,
+        "tracks_count": int(album.get("tracks_count") or 0),
+        "duration": int(album.get("duration") or 0),
+    }
+
+
 class QobuzClient:
     def __init__(self, token: str):
         self._token = token
@@ -83,6 +98,17 @@ class QobuzClient:
             tracks.extend(page.get("tracks", {}).get("items", []))
         return tracks
 
+    def get_artist_albums(self, artist_id: str) -> list[dict]:
+        """Return all album objects for an artist (paginated)."""
+        self._ensure_client()
+        pages = self._client.get_artist_meta(str(artist_id))
+        if isinstance(pages, dict):
+            pages = [pages]
+        albums: list[dict] = []
+        for page in pages:
+            albums.extend(page.get("albums", {}).get("items", []))
+        return albums
+
     def get_track_album_id(self, track_id: str) -> Optional[str]:
         """Return the Qobuz album id for a track, using DB cache when possible."""
         cached = db.get_cached_album(str(track_id))
@@ -117,6 +143,55 @@ class QobuzClient:
                     track_id, album_id, album_url_from_id(album_id)
                 )
         return album_ids
+
+    def playlist_to_album_plan_from_tracks(self, playlist_url: str) -> list[dict]:
+        """
+        For expand_albums: build album plan from playlist track objects.
+        No extra API calls — all metadata comes from the track's embedded album dict.
+        """
+        tracks = self.get_playlist_tracks(playlist_url)
+        seen: set[str] = set()
+        albums: list[dict] = []
+        for track in tracks:
+            raw_album = track.get("album", {})
+            album_id = str(raw_album.get("id", ""))
+            if not album_id or album_id in seen:
+                continue
+            seen.add(album_id)
+            albums.append(_album_dict(raw_album))
+            track_id = str(track.get("id", ""))
+            if track_id:
+                db.cache_track_album(track_id, album_id, album_url_from_id(album_id))
+        return albums
+
+    def discography_to_album_plan(self, artist_url: str) -> list[dict]:
+        """Return album plan for a single artist URL."""
+        artist_id = _extract_id(artist_url)
+        return [_album_dict(a) for a in self.get_artist_albums(artist_id) if a.get("id")]
+
+    def playlist_to_album_plan(self, playlist_url: str) -> list[dict]:
+        """
+        For expand_discographies: resolve all unique artists in the playlist,
+        then return their combined album catalogs (deduplicated).
+        """
+        tracks = self.get_playlist_tracks(playlist_url)
+        seen_artists: set[str] = set()
+        artist_ids: list[str] = []
+        for track in tracks:
+            artist_id = self._get_artist_id_from_track(track)
+            if artist_id and artist_id not in seen_artists:
+                seen_artists.add(artist_id)
+                artist_ids.append(artist_id)
+
+        seen_albums: set[str] = set()
+        albums: list[dict] = []
+        for artist_id in artist_ids:
+            for raw_album in self.get_artist_albums(artist_id):
+                album_id = str(raw_album.get("id", ""))
+                if album_id and album_id not in seen_albums:
+                    seen_albums.add(album_id)
+                    albums.append(_album_dict(raw_album))
+        return albums
 
     def _get_artist_id_from_track(self, track: dict) -> Optional[str]:
         """Extract the primary artist ID from a track dict."""

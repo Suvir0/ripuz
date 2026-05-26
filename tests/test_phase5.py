@@ -15,7 +15,7 @@ from app.structure import (
     clean_empty_dirs,
     verify_structure,
 )
-from app.pipeline import run_playlist_pipeline, run_expand_albums_pipeline
+from app.pipeline import run_playlist_pipeline, run_expand_albums_resolve, run_expand_albums_download
 from app.jobs import enqueue, _process_job
 
 
@@ -219,100 +219,99 @@ def test_playlist_pipeline_logs_steps(tmp_dirs):
     assert "tagging" in log.lower()
 
 
-# ── expand_albums pipeline ─────────────────────────────────────────────────────
+# ── expand_albums pipeline (two-phase) ────────────────────────────────────────
 
-def test_expand_albums_pipeline_success(tmp_dirs):
+def _fake_album_plan(ids):
+    return [
+        {"id": aid, "url": f"https://play.qobuz.com/album/{aid}",
+         "title": f"Album {aid}", "artist": "Artist", "tracks_count": 10, "duration": 2400}
+        for aid in ids
+    ]
+
+
+def _setup_plan(job_id, albums, quality=27):
+    import json
+    plan = {"albums": albums, "skipped_existing": 0, "est_gb": 1.0,
+            "quality": quality, "capped": False, "cap": 300}
+    db.set_job_plan(job_id, json.dumps(plan))
+    db.update_job(job_id, status="confirmed")
+
+
+def _big_disk(path):
+    m = MagicMock(); m.free = 500 * 1024**3; return m
+
+
+def test_expand_albums_resolve_sets_awaiting_confirm():
     import app.settings_store as ss
     ss.save_settings("fake_token")
 
     job_id = db.create_job("expand_albums", "https://play.qobuz.com/playlist/99")
     mock_client = MagicMock()
-    mock_client.playlist_to_album_ids.return_value = ["alb1", "alb2"]
-    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
+    mock_client.playlist_to_album_plan_from_tracks.return_value = _fake_album_plan(["alb1", "alb2"])
 
     with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.album_already_present", return_value=False):
+        ok = run_expand_albums_resolve(job_id, "https://play.qobuz.com/playlist/99")
+
+    assert ok is True
+    assert db.get_job(job_id)["status"] == "awaiting_confirm"
+
+
+def test_expand_albums_download_success(tmp_dirs):
+    job_id = db.create_job("expand_albums", "https://play.qobuz.com/playlist/100")
+    albums = _fake_album_plan(["alb_a", "alb_b"])
+    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
+    _setup_plan(job_id, albums)
+
+    dirs_iter = iter([[d] for d in album_dirs])
+
+    with patch("app.pipeline.run_download", return_value=_ok_download()), \
+         patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter)), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
-         patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": ["Drake"], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        ok = run_expand_albums_pipeline(job_id, "https://play.qobuz.com/playlist/99")
+         patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": ["Artist"], "issues": []}), \
+         patch("app.pipeline.clean_empty_dirs"), \
+         patch("app.pipeline.shutil.disk_usage", side_effect=_big_disk):
+        ok = run_expand_albums_download(job_id, lambda: False)
 
     assert ok is True
     assert db.get_job(job_id)["status"] == "done"
 
 
-def test_expand_albums_downloads_each_album(tmp_dirs):
-    import app.settings_store as ss
-    ss.save_settings("fake_token")
-
-    job_id = db.create_job("expand_albums", "https://play.qobuz.com/playlist/100")
-    mock_client = MagicMock()
-    mock_client.playlist_to_album_ids.return_value = ["alb_a", "alb_b", "alb_c"]
-    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
-
-    download_calls = []
-
-    def record_download(url, **kwargs):
-        download_calls.append(url)
-        return _ok_download()
-
-    with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", side_effect=record_download), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
-         patch("app.pipeline.run_picard", return_value=_ok_picard()), \
-         patch("app.pipeline.move_album", return_value=_ok_move()), \
-         patch("app.pipeline.verify_structure", return_value={"flac_count": 3, "artists": [], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        run_expand_albums_pipeline(job_id, "https://play.qobuz.com/playlist/100")
-
-    assert len(download_calls) == 3
-    assert all("play.qobuz.com/album/" in u for u in download_calls)
-
-
-def test_expand_albums_continues_after_one_failure(tmp_dirs):
-    """A single album download failure should not abort the rest."""
-    import app.settings_store as ss
-    ss.save_settings("fake_token")
-
+def test_expand_albums_download_continues_after_one_failure(tmp_dirs):
     job_id = db.create_job("expand_albums", "https://play.qobuz.com/playlist/101")
-    mock_client = MagicMock()
-    mock_client.playlist_to_album_ids.return_value = ["good1", "bad1", "good2"]
-    album_dirs = _two_album_dirs(tmp_dirs / "downloads")
+    albums = _fake_album_plan(["good1", "bad1", "good2"])
+    album_dirs = [tmp_dirs / "downloads" / f"d{i}" for i in range(3)]
+    for d in album_dirs:
+        d.mkdir(parents=True, exist_ok=True)
+    _setup_plan(job_id, albums)
 
-    dl_results = {
-        "good1": _ok_download(),
-        "bad1": _fail_download("geo-blocked"),
-        "good2": _ok_download(),
-    }
+    dirs_iter = iter([[d] for d in album_dirs])
 
     def download_by_url(url, **kwargs):
-        for k, v in dl_results.items():
-            if k in url:
-                return v
+        if "bad1" in url:
+            return _fail_download("geo-blocked")
         return _ok_download()
 
-    with patch("app.pipeline.make_client", return_value=mock_client), \
-         patch("app.pipeline.run_download", side_effect=download_by_url), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+    with patch("app.pipeline.run_download", side_effect=download_by_url), \
+         patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter, [])), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": [], "issues": []}), \
-         patch("app.pipeline.clean_empty_dirs"):
-        ok = run_expand_albums_pipeline(job_id, "https://play.qobuz.com/playlist/101")
+         patch("app.pipeline.clean_empty_dirs"), \
+         patch("app.pipeline.shutil.disk_usage", side_effect=_big_disk):
+        ok = run_expand_albums_download(job_id, lambda: False)
 
-    # Returns False because one album download failed
     assert ok is False
     assert db.get_job(job_id)["status"] == "done_with_warnings"
 
 
-def test_expand_albums_no_token():
+def test_expand_albums_resolve_no_token():
     import app.settings_store as ss
-    ss.save_settings("")  # clear token
+    ss.save_settings("")
 
     job_id = db.create_job("expand_albums", "https://play.qobuz.com/playlist/102")
-    ok = run_expand_albums_pipeline(job_id, "https://play.qobuz.com/playlist/102")
+    ok = run_expand_albums_resolve(job_id, "https://play.qobuz.com/playlist/102")
     assert ok is False
     assert db.get_job(job_id)["status"] == "error"
 
@@ -327,17 +326,18 @@ def test_enqueue_creates_queued_job():
 
 
 def test_process_job_routes_playlist():
+    from unittest.mock import ANY
     job_id = db.create_job("playlist", "https://play.qobuz.com/playlist/x")
     job = db.get_job(job_id)
     with patch("app.jobs.run_playlist_pipeline", return_value=True) as mock_pl:
         _process_job(job)
-    mock_pl.assert_called_once_with(job_id, "https://play.qobuz.com/playlist/x")
+    mock_pl.assert_called_once_with(job_id, "https://play.qobuz.com/playlist/x", ANY)
 
 
 def test_process_job_routes_expand_albums():
     job_id = db.create_job("expand_albums", "https://play.qobuz.com/playlist/y")
     job = db.get_job(job_id)
-    with patch("app.jobs.run_expand_albums_pipeline", return_value=True) as mock_ea:
+    with patch("app.jobs.run_expand_albums_resolve", return_value=True) as mock_ea:
         _process_job(job)
     mock_ea.assert_called_once_with(job_id, "https://play.qobuz.com/playlist/y")
 

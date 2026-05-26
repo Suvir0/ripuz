@@ -22,16 +22,18 @@ logger = logging.getLogger(__name__)
 _UNSAFE_RE = re.compile(r'[/\\<>:"|?*\x00-\x1f]')
 
 
-def _sanitize(name: str) -> str:
+def sanitize_path(name: str) -> str:
     """Replace path-unsafe chars and spaces with underscores."""
     name = _UNSAFE_RE.sub("_", name)
     name = name.replace(" ", "_")
     name = re.sub(r"_+", "_", name)
     name = name.strip("_") or "_"
-    # Reject dot-only components that would traverse directories
     if name in (".", ".."):
         return "_"
     return name
+
+
+_sanitize = sanitize_path  # internal alias
 
 
 def _first_tag(tags: FLAC, *keys: str, default: str = "") -> str:

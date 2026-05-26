@@ -117,6 +117,36 @@ async def api_get_job(job_id: int):
     return job
 
 
+@app.post("/api/jobs/{job_id}/confirm")
+async def api_confirm_job(job_id: int):
+    job = db.get_job(job_id)
+    if not job:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if job["status"] != "awaiting_confirm":
+        return JSONResponse(
+            {"error": f"job is '{job['status']}', expected 'awaiting_confirm'"},
+            status_code=409,
+        )
+    db.update_job(job_id, status="confirmed")
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def api_cancel_job(job_id: int):
+    from app.jobs import cancel_job
+    job = db.get_job(job_id)
+    if not job:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    terminal = {"done", "done_with_warnings", "error", "cancelled"}
+    if job["status"] in terminal:
+        return JSONResponse(
+            {"error": f"job already finished with status '{job['status']}'"},
+            status_code=409,
+        )
+    cancel_job(job_id)
+    return {"ok": True}
+
+
 @app.post("/api/jobs")
 async def api_create_job(body: dict):
     from app.jobs import enqueue
