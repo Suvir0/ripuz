@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+ARG GIT_SHA=dev
+ENV GIT_SHA=${GIT_SHA}
+
 # ── System packages ───────────────────────────────────────────────────────────
 # picard: MusicBrainz Picard 2.9+ (apt name on Debian bookworm is picard)
 # xvfb:  virtual framebuffer for headless Picard GUI

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -176,6 +176,12 @@ async def api_create_job(body: dict):
     job_id = enqueue(job_type, url)
     return {"job_id": job_id}
 
+
+_INDEX_TEMPLATE = (_STATIC_DIR / "index.html").read_text(encoding="utf-8") if _STATIC_DIR.exists() else ""
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def serve_index():
+    return _INDEX_TEMPLATE.replace("__VERSION__", config.APP_VERSION)
 
 # Mount static files last (catch-all)
 if _STATIC_DIR.exists():

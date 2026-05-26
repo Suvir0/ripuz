@@ -26,6 +26,10 @@ DISK_FLOOR_GB = float(os.getenv("DISK_FLOOR_GB", "20"))
 # Cap on total albums a single bulk job will download (prevents runaway on large catalogs).
 MAX_ALBUMS_PER_JOB = int(os.getenv("MAX_ALBUMS_PER_JOB", "300"))
 
+# Build identity: 7-char git SHA injected at image build time via --build-arg GIT_SHA.
+# Falls back to "dev" for local runs without a build arg.
+APP_VERSION = os.getenv("GIT_SHA", "dev")[:7]
+
 # Optional HTTP Basic Auth — leave RIPUZ_AUTH_PASS empty to disable (default).
 RIPUZ_AUTH_USER = os.getenv("RIPUZ_AUTH_USER", "ripuz")
 RIPUZ_AUTH_PASS = os.getenv("RIPUZ_AUTH_PASS", "")
