@@ -100,7 +100,10 @@ async def api_save_settings(body: dict):
             return JSONResponse({"error": "invalid quality"}, status_code=400)
         if quality not in VALID_QUALITIES:
             return JSONResponse({"error": "invalid quality"}, status_code=400)
-    save_settings(token, downloads, music, quality)
+    download_lyrics: bool | None = None
+    if "download_lyrics" in body:
+        download_lyrics = bool(body["download_lyrics"])
+    save_settings(token, downloads, music, quality, download_lyrics)
     return {"ok": True}
 
 

@@ -11,6 +11,7 @@ _QOBUZ_TOKEN_KEY = "qobuz_token"
 _DOWNLOADS_DIR_KEY = "downloads_dir"
 _MUSIC_DIR_KEY = "music_dir"
 _QUALITY_KEY = "music_quality"
+_DOWNLOAD_LYRICS_KEY = "download_lyrics"
 
 # All valid Qobuz quality levels accepted by qobuz-dl -q
 VALID_QUALITIES = (5, 6, 7, 27)
@@ -26,9 +27,15 @@ def get_quality() -> int:
     return q if q in VALID_QUALITIES else config.QOBUZ_QUALITY
 
 
+def get_download_lyrics() -> bool:
+    """Return whether synced .lrc lyrics download is enabled (default off)."""
+    return db.get_setting(_DOWNLOAD_LYRICS_KEY, "false") == "true"
+
+
 def save_settings(token: str, downloads_dir: str | None = None,
                   music_dir: str | None = None,
-                  quality: int | None = None) -> None:
+                  quality: int | None = None,
+                  download_lyrics: bool | None = None) -> None:
     db.set_setting(_QOBUZ_TOKEN_KEY, token)
     if downloads_dir:
         db.set_setting(_DOWNLOADS_DIR_KEY, downloads_dir)
@@ -36,6 +43,8 @@ def save_settings(token: str, downloads_dir: str | None = None,
         db.set_setting(_MUSIC_DIR_KEY, music_dir)
     if quality is not None and quality in VALID_QUALITIES:
         db.set_setting(_QUALITY_KEY, str(quality))
+    if download_lyrics is not None:
+        db.set_setting(_DOWNLOAD_LYRICS_KEY, "true" if download_lyrics else "false")
     _write_qobuz_dl_config()
 
 
@@ -45,6 +54,7 @@ def get_settings() -> dict:
         "downloads_dir": db.get_setting(_DOWNLOADS_DIR_KEY, str(config.DOWNLOADS_DIR)),
         "music_dir": db.get_setting(_MUSIC_DIR_KEY, str(config.MUSIC_DIR)),
         "music_quality": get_quality(),
+        "download_lyrics": get_download_lyrics(),
     }
 
 
@@ -56,6 +66,7 @@ def _write_qobuz_dl_config() -> None:
     """Write config.ini for qobuz-dl-ultimate (2026 schema) with stored settings."""
     token = db.get_setting(_QOBUZ_TOKEN_KEY, "")
     downloads = db.get_setting(_DOWNLOADS_DIR_KEY, str(config.DOWNLOADS_DIR))
+    lyrics = get_download_lyrics()
 
     # Fetch app_id + secrets dynamically from Qobuz (same as qobuz-dl wizard does)
     app_id = ""
@@ -74,7 +85,9 @@ def _write_qobuz_dl_config() -> None:
         "password": "",
         # 2026 schema: auth token key is auth_token, not token
         "auth_token": token,
-        "fetch_lyrics": "false",
+        # Plex reads sidecar .lrc files only (not embedded tags), so when lyrics
+        # are enabled we write external .lrc and skip embedding.
+        "fetch_lyrics": "true" if lyrics else "false",
         "genius_token": "",
         "directory": downloads,
         "folder_format": "{album_artist}/{album_title}",
@@ -87,8 +100,8 @@ def _write_qobuz_dl_config() -> None:
         "embed_art": "true",
         "no_cover": "false",
         "no_database": "false",
-        "no_lrc_files": "true",
-        "embed_lyrics": "true",
+        "no_lrc_files": "false" if lyrics else "true",
+        "embed_lyrics": "false",
         "multi_value_tags": "false",
         "legacy_charmap": "false",
         "blacklist": "blacklist.txt",

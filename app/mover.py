@@ -116,5 +116,20 @@ def move_album(album_dir: Path, music_dir: Path) -> MoveResult:
             logger.error(msg)
             result.errors.append(msg)
             result.skipped.append(src)
+            continue
+
+        # Carry the sidecar .lrc lyrics file (if any) so its stem matches the
+        # moved FLAC exactly — Plex reads sidecars named identically to the track.
+        for lrc_src in (src.with_suffix(".lrc"), src.with_suffix(".LRC")):
+            if lrc_src.exists():
+                lrc_dest = dest.with_suffix(".lrc")
+                try:
+                    shutil.move(str(lrc_src), str(lrc_dest))
+                    logger.debug("move_album: %s → %s", lrc_src, lrc_dest)
+                except Exception as exc:
+                    msg = f"failed to move lyrics {lrc_src} → {lrc_dest}: {exc}"
+                    logger.warning(msg)
+                    result.errors.append(msg)
+                break
 
     return result

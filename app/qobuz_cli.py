@@ -67,7 +67,6 @@ def build_download_command(
         "-ff", folder_format,
         "-tf", track_format,
         "--no-m3u",
-        "--no-lrc-files",
         url,
     ]
 

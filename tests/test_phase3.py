@@ -59,10 +59,12 @@ def test_command_uses_sys_executable():
     assert cmd[0] == sys.executable
 
 
-def test_command_includes_no_m3u_and_no_lrc():
+def test_command_includes_no_m3u_and_omits_lrc_flag():
+    # Lyrics/.lrc behavior is governed by config.ini (the download_lyrics
+    # setting), not a hardcoded CLI flag.
     cmd = build_download_command("https://example.com/album/1", Path("/dl"))
     assert "--no-m3u" in cmd
-    assert "--no-lrc-files" in cmd
+    assert "--no-lrc-files" not in cmd
 
 
 def test_custom_quality_overrides_default():

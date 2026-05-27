@@ -244,6 +244,46 @@ def test_move_album_fallback_tags(tmp_path):
     assert dest.exists()
 
 
+def test_move_album_carries_lrc_sidecar(tmp_path):
+    """A sibling .lrc moves alongside its FLAC with a matching stem."""
+    dl = tmp_path / "dl" / "artist" / "album"
+    music = tmp_path / "music"
+    music.mkdir(exist_ok=True)
+
+    _make_tagged_flac(
+        dl / "track.flac",
+        artist="Some Artist",
+        album="Some Album",
+        title="Some Title",
+    )
+    (dl / "track.lrc").write_text("[00:01.00]hello\n")
+
+    result = move_album(dl, music)
+
+    assert len(result.moved) == 1
+    flac_dest = music / "Some_Artist" / "Some_Album" / "Some_Title.FLAC"
+    lrc_dest = music / "Some_Artist" / "Some_Album" / "Some_Title.lrc"
+    assert flac_dest.exists()
+    assert lrc_dest.exists()
+    assert lrc_dest.read_text().startswith("[00:01.00]")
+    # Source sidecar should be gone (moved, not copied).
+    assert not (dl / "track.lrc").exists()
+
+
+def test_move_album_no_lrc_sidecar_is_fine(tmp_path):
+    """Absence of a .lrc sidecar leaves the move unaffected."""
+    dl = tmp_path / "dl" / "a"
+    music = tmp_path / "music"
+    music.mkdir(exist_ok=True)
+    _make_tagged_flac(dl / "t.flac", artist="A", album="B", title="T")
+
+    result = move_album(dl, music)
+
+    assert len(result.moved) == 1
+    assert not (music / "A" / "B" / "T.lrc").exists()
+    assert not result.errors
+
+
 def test_move_album_skips_path_escape_symlink(tmp_path):
     dl = tmp_path / "dl" / "escape"
     music = tmp_path / "music"

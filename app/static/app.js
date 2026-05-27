@@ -72,6 +72,7 @@ async function loadSettings() {
     if (s.music_quality) {
       document.getElementById('music_quality').value = String(s.music_quality);
     }
+    document.getElementById('download_lyrics').checked = !!s.download_lyrics;
   } catch (e) {
     console.error('loadSettings', e);
   }
@@ -85,6 +86,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
     downloads_dir: document.getElementById('downloads_dir').value.trim(),
     music_dir: document.getElementById('music_dir').value.trim(),
     music_quality: parseInt(document.getElementById('music_quality').value, 10),
+    download_lyrics: document.getElementById('download_lyrics').checked,
   };
   try {
     const res = await fetch('/api/settings', {
