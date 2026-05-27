@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Optional
 
-from app import db
+from app import config, db
 
 logger = logging.getLogger(__name__)
 
@@ -173,24 +173,54 @@ class QobuzClient:
         """
         For expand_discographies: resolve all unique artists in the playlist,
         then return their combined album catalogs (deduplicated).
+
+        Filtering applied:
+        - Only expands catalogs for artists who appear as album-artist on at least
+          EXPAND_MIN_ARTIST_TRACKS tracks (filters out one-off featured artists).
+        - Drops albums whose "<artist> <title>" matches EXPAND_JUNK_PATTERNS.
         """
         tracks = self.get_playlist_tracks(playlist_url)
-        seen_artists: set[str] = set()
-        artist_ids: list[str] = []
+
+        # Count how many tracks each artist is the *album* artist for.
+        album_artist_counts: dict[str, int] = {}
         for track in tracks:
-            artist_id = self._get_artist_id_from_track(track)
-            if artist_id and artist_id not in seen_artists:
-                seen_artists.add(artist_id)
-                artist_ids.append(artist_id)
+            album = track.get("album") or {}
+            artist = album.get("artist") or {}
+            a_id = str(artist.get("id", "")).strip()
+            if a_id:
+                album_artist_counts[a_id] = album_artist_counts.get(a_id, 0) + 1
+
+        min_tracks = config.EXPAND_MIN_ARTIST_TRACKS
+        qualified_artists: list[str] = [
+            a_id for a_id, cnt in album_artist_counts.items() if cnt >= min_tracks
+        ]
+        logger.debug(
+            "expand_discographies: %d artist(s) meet min_tracks=%d (of %d total)",
+            len(qualified_artists), min_tracks, len(album_artist_counts),
+        )
+
+        junk_re: Optional[re.Pattern] = None
+        if config.EXPAND_JUNK_PATTERNS:
+            try:
+                junk_re = re.compile(config.EXPAND_JUNK_PATTERNS, re.IGNORECASE)
+            except re.error as exc:
+                logger.warning("EXPAND_JUNK_PATTERNS invalid regex (%s); skipping filter", exc)
 
         seen_albums: set[str] = set()
         albums: list[dict] = []
-        for artist_id in artist_ids:
+        for artist_id in qualified_artists:
             for raw_album in self.get_artist_albums(artist_id):
                 album_id = str(raw_album.get("id", ""))
-                if album_id and album_id not in seen_albums:
-                    seen_albums.add(album_id)
-                    albums.append(_album_dict(raw_album))
+                if not album_id or album_id in seen_albums:
+                    continue
+                seen_albums.add(album_id)
+                d = _album_dict(raw_album)
+                if junk_re:
+                    probe = f"{d.get('artist', '')} {d.get('title', '')}"
+                    if junk_re.search(probe):
+                        logger.debug("expand_discographies: skipping junk album: %s", probe)
+                        continue
+                albums.append(d)
         return albums
 
     def _get_artist_id_from_track(self, track: dict) -> Optional[str]:

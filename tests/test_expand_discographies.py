@@ -451,3 +451,139 @@ def test_api_rejects_invalid_job_type():
         json={"type": "not_a_real_type", "url": "https://play.qobuz.com/playlist/1"},
     )
     assert resp.status_code == 400
+
+
+# ── Section E: playlist_to_album_plan filters ─────────────────────────────────
+
+def _raw_album(album_id, title, artist_name, artist_id):
+    return {
+        "id": album_id,
+        "title": title,
+        "artist": {"id": artist_id, "name": artist_name},
+        "tracks_count": 5,
+        "duration": 1200,
+    }
+
+
+def _playlist_track(album_artist_id, track_id="t1"):
+    return {"id": track_id, "album": {"artist": {"id": album_artist_id}}}
+
+
+def test_album_plan_excludes_infrequent_artists():
+    """Artists appearing as album-artist only once should not have their catalogs expanded."""
+    import app.config as cfg
+    client = QobuzClient("fake_token")
+    # artist "main" appears 3 times, artist "feat" appears once
+    tracks = [
+        _playlist_track("main", "t1"),
+        _playlist_track("main", "t2"),
+        _playlist_track("main", "t3"),
+        _playlist_track("feat", "t4"),
+    ]
+    main_albums = [_raw_album("alb1", "Real Album", "Main Artist", "main")]
+    feat_albums = [_raw_album("alb2", "Feature Album", "Feat Artist", "feat")]
+
+    def fake_get_artist_albums(artist_id):
+        return main_albums if artist_id == "main" else feat_albums
+
+    with patch.object(client, "get_playlist_tracks", return_value=tracks), \
+         patch.object(client, "get_artist_albums", side_effect=fake_get_artist_albums), \
+         patch.object(cfg, "EXPAND_MIN_ARTIST_TRACKS", 2), \
+         patch.object(cfg, "EXPAND_JUNK_PATTERNS", ""):
+        result = client.playlist_to_album_plan("https://play.qobuz.com/playlist/1")
+
+    ids = [a["id"] for a in result]
+    assert "alb1" in ids
+    assert "alb2" not in ids  # "feat" only appeared once — catalog not expanded
+
+
+def test_album_plan_min_tracks_one_includes_all():
+    """Setting threshold to 1 restores original behaviour (expand all artists)."""
+    import app.config as cfg
+    client = QobuzClient("fake_token")
+    tracks = [
+        _playlist_track("main", "t1"),
+        _playlist_track("feat", "t2"),
+    ]
+    main_albums = [_raw_album("alb1", "Main Album", "Main", "main")]
+    feat_albums = [_raw_album("alb2", "Feat Album", "Feat", "feat")]
+
+    def fake_get_artist_albums(artist_id):
+        return main_albums if artist_id == "main" else feat_albums
+
+    with patch.object(client, "get_playlist_tracks", return_value=tracks), \
+         patch.object(client, "get_artist_albums", side_effect=fake_get_artist_albums), \
+         patch.object(cfg, "EXPAND_MIN_ARTIST_TRACKS", 1), \
+         patch.object(cfg, "EXPAND_JUNK_PATTERNS", ""):
+        result = client.playlist_to_album_plan("https://play.qobuz.com/playlist/1")
+
+    ids = [a["id"] for a in result]
+    assert "alb1" in ids
+    assert "alb2" in ids
+
+
+def test_album_plan_junk_filter_drops_matching_albums():
+    """Albums whose artist+title matches EXPAND_JUNK_PATTERNS are excluded."""
+    import app.config as cfg
+    client = QobuzClient("fake_token")
+    tracks = [_playlist_track("artist1", "t1"), _playlist_track("artist1", "t2")]
+    raw_albums = [
+        _raw_album("legit", "Good Album", "Real Artist", "artist1"),
+        _raw_album("junk1", "Good Album (Karaoke Version)", "Karaoke Studio", "artist1"),
+        _raw_album("junk2", "Nightcore Mix", "NightcoreChan", "artist1"),
+        _raw_album("junk3", "Originally Performed by Drake", "Tribute Band", "artist1"),
+    ]
+
+    with patch.object(client, "get_playlist_tracks", return_value=tracks), \
+         patch.object(client, "get_artist_albums", return_value=raw_albums), \
+         patch.object(cfg, "EXPAND_MIN_ARTIST_TRACKS", 1), \
+         patch.object(cfg, "EXPAND_JUNK_PATTERNS", r"karaoke|nightcore|originally performed by"):
+        result = client.playlist_to_album_plan("https://play.qobuz.com/playlist/1")
+
+    ids = [a["id"] for a in result]
+    assert "legit" in ids
+    assert "junk1" not in ids
+    assert "junk2" not in ids
+    assert "junk3" not in ids
+
+
+def test_album_plan_empty_junk_patterns_keeps_all():
+    """Empty EXPAND_JUNK_PATTERNS disables junk filtering."""
+    import app.config as cfg
+    client = QobuzClient("fake_token")
+    tracks = [_playlist_track("artist1", "t1"), _playlist_track("artist1", "t2")]
+    raw_albums = [
+        _raw_album("alb1", "Karaoke Hits", "Karaoke Inc", "artist1"),
+        _raw_album("alb2", "Real Music", "Real Artist", "artist1"),
+    ]
+
+    with patch.object(client, "get_playlist_tracks", return_value=tracks), \
+         patch.object(client, "get_artist_albums", return_value=raw_albums), \
+         patch.object(cfg, "EXPAND_MIN_ARTIST_TRACKS", 1), \
+         patch.object(cfg, "EXPAND_JUNK_PATTERNS", ""):
+        result = client.playlist_to_album_plan("https://play.qobuz.com/playlist/1")
+
+    ids = [a["id"] for a in result]
+    assert "alb1" in ids
+    assert "alb2" in ids
+
+
+def test_album_plan_deduplicates_albums_across_artists():
+    """Same album shared by two qualifying artists appears only once."""
+    import app.config as cfg
+    client = QobuzClient("fake_token")
+    tracks = [
+        _playlist_track("artist1", "t1"),
+        _playlist_track("artist1", "t2"),
+        _playlist_track("artist2", "t3"),
+        _playlist_track("artist2", "t4"),
+    ]
+    shared_album = _raw_album("shared", "Collab Album", "Artist1", "artist1")
+
+    with patch.object(client, "get_playlist_tracks", return_value=tracks), \
+         patch.object(client, "get_artist_albums", return_value=[shared_album]), \
+         patch.object(cfg, "EXPAND_MIN_ARTIST_TRACKS", 2), \
+         patch.object(cfg, "EXPAND_JUNK_PATTERNS", ""):
+        result = client.playlist_to_album_plan("https://play.qobuz.com/playlist/1")
+
+    assert len([a for a in result if a["id"] == "shared"]) == 1

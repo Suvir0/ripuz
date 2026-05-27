@@ -46,10 +46,31 @@ def test_command_loads_source_dir(tmp_path):
     assert f"LOAD {tmp_path}" in cmd
 
 
-def test_command_has_cluster_and_lookup(tmp_path):
+def test_command_has_cluster(tmp_path):
     cmd = build_picard_command(tmp_path)
     assert "CLUSTER" in cmd
-    assert "LOOKUP clustered" in cmd
+
+
+def test_command_lookup_disabled_by_default(tmp_path):
+    import app.picard as picard_mod
+    old = picard_mod.PICARD_LOOKUP
+    picard_mod.PICARD_LOOKUP = False
+    try:
+        cmd = build_picard_command(tmp_path)
+        assert "LOOKUP clustered" not in cmd
+    finally:
+        picard_mod.PICARD_LOOKUP = old
+
+
+def test_command_lookup_enabled_when_flag_set(tmp_path):
+    import app.picard as picard_mod
+    old = picard_mod.PICARD_LOOKUP
+    picard_mod.PICARD_LOOKUP = True
+    try:
+        cmd = build_picard_command(tmp_path)
+        assert "LOOKUP clustered" in cmd
+    finally:
+        picard_mod.PICARD_LOOKUP = old
 
 
 def test_command_has_save(tmp_path):

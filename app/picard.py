@@ -2,22 +2,27 @@
 Headless Picard runner.
 
 Picard is a Qt GUI app. On a headless server we run it under xvfb-run with
-the -e remote-command interface (v3.0+):
+the -e remote-command interface (requires Picard 2.5+, tested on 2.8+):
 
   xvfb-run -a picard \
     --stand-alone-instance \
     -e CLEAR \
     -e "LOAD <dir>" \
     -e CLUSTER \
-    -e "LOOKUP clustered" \
+    [-e "LOOKUP clustered"]   <- optional, off by default (slow network call)
     -e SAVE \
     -e "QUIT force"
 
 --stand-alone-instance bypasses Picard's single-instance pipe mechanism so
 each subprocess is fully self-contained and there are no stale FIFO issues.
 
-Picard is now invoked once per album directory (small batch) instead of the
-whole downloads tree at once, which prevents MusicBrainz lookup timeouts.
+LOOKUP clustered is disabled by default because it makes MusicBrainz network
+calls that can stall indefinitely under rate-limiting, causing every album to
+hit the timeout. Enable it explicitly with PICARD_LOOKUP=1 if you want
+MusicBrainz tag enrichment and accept the latency risk.
+
+Picard is invoked once per album directory (small batch) instead of the whole
+downloads tree at once.
 """
 import logging
 import os
@@ -34,8 +39,12 @@ logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
 
 # 120 s default: a hung Picard fails fast and files still move with qobuz embedded tags.
-# Tune upward on slow MusicBrainz days via PICARD_TIMEOUT env var.
+# Tune via PICARD_TIMEOUT env var (seconds).
 PICARD_TIMEOUT_SECONDS = int(os.getenv("PICARD_TIMEOUT", "120"))
+
+# MusicBrainz lookup is opt-in: it makes network calls that can stall indefinitely.
+# Set PICARD_LOOKUP=1 to enable (accepts latency/timeout risk).
+PICARD_LOOKUP = os.getenv("PICARD_LOOKUP", "0").strip() == "1"
 
 
 @dataclass
@@ -76,7 +85,10 @@ def build_picard_command(
         "-e", "CLEAR",
         "-e", f"LOAD {source_dir}",
         "-e", "CLUSTER",
-        "-e", "LOOKUP clustered",
+    ]
+    if PICARD_LOOKUP:
+        picard_args += ["-e", "LOOKUP clustered"]
+    picard_args += [
         "-e", "SAVE",
         "-e", "QUIT force",
     ]
