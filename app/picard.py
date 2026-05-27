@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 
 LogCallback = Callable[[str], None]
 
-# 600 s default gives Picard time on slow/busy MusicBrainz days; tune via PICARD_TIMEOUT.
-PICARD_TIMEOUT_SECONDS = int(os.getenv("PICARD_TIMEOUT", "600"))
+# 120 s default: a hung Picard fails fast and files still move with qobuz embedded tags.
+# Tune upward on slow MusicBrainz days via PICARD_TIMEOUT env var.
+PICARD_TIMEOUT_SECONDS = int(os.getenv("PICARD_TIMEOUT", "120"))
 
 
 @dataclass

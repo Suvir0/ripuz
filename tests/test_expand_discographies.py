@@ -252,7 +252,7 @@ def test_download_success(tmp_dirs):
     album_dirs = _two_album_dirs(tmp_dirs / "downloads")
     _setup_plan(job_id, albums)
 
-    dirs_iter = iter([[d] for d in album_dirs])
+    dirs_iter = iter([[], [album_dirs[0]], [], [album_dirs[1]]])
 
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
          patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter)), \
@@ -282,7 +282,8 @@ def test_download_continues_after_one_failure(tmp_dirs):
             return _fail_download("geo-blocked")
         return _ok_download()
 
-    dirs_iter = iter([[d] for d in album_dirs])
+    # album0 ok: [], [d0]; album1 fails: []; album2 ok: [], [d2]
+    dirs_iter = iter([[], [album_dirs[0]], [], [], [album_dirs[2]]])
 
     with patch("app.pipeline.run_download", side_effect=maybe_fail), \
          patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter, [])), \
@@ -304,7 +305,7 @@ def test_download_no_files_moved_is_error(tmp_dirs):
     _setup_plan(job_id, albums)
 
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_empty_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 0, "artists": [], "issues": []}), \
@@ -369,7 +370,7 @@ def test_download_downloads_each_album(tmp_dirs):
     _setup_plan(job_id, albums)
 
     download_urls = []
-    dirs_iter = iter([[d] for d in album_dirs])
+    dirs_iter = iter([item for d in album_dirs for item in ([], [d])])
 
     def record(url, **kwargs):
         download_urls.append(url)
@@ -395,7 +396,7 @@ def test_download_single_artist_done(tmp_dirs):
     _setup_plan(job_id, albums)
 
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move(2)), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": ["solo"], "issues": []}), \

@@ -181,8 +181,11 @@ def test_download_success(tmp_dirs):
     album_dirs = _album_dirs(tmp_dirs / "downloads", count=2)
     _setup_plan(job_id, albums)
 
+    # list_album_dirs: before album0=[], after album0=[d0], before album1=[], after album1=[d1]
+    dirs_iter = iter([[], [album_dirs[0]], [], [album_dirs[1]]])
+
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter)), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": ["Artist"], "issues": []}), \
@@ -205,8 +208,11 @@ def test_download_failure_marks_done_with_warnings(tmp_dirs):
             return _fail_download("geo-blocked")
         return _ok_download()
 
+    # album0 fails (only before-scan): [], album1 succeeds: [], [d1]
+    dirs_iter = iter([[], [], [album_dirs[1]]])
+
     with patch("app.pipeline.run_download", side_effect=fail_one), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter)), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 1, "artists": [], "issues": []}), \
@@ -225,7 +231,7 @@ def test_download_picard_failure_still_moves(tmp_dirs):
     _setup_plan(job_id, albums)
 
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_fail_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 1, "artists": [], "issues": []}), \
@@ -244,7 +250,7 @@ def test_download_no_files_moved_is_error(tmp_dirs):
     _setup_plan(job_id, albums)
 
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_empty_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 0, "artists": [], "issues": []}), \
@@ -272,7 +278,7 @@ def test_download_cancelled_mid_run(tmp_dirs):
         return _cancelled_download()
 
     with patch("app.pipeline.run_download", side_effect=cancel_after_one), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[]]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 0, "artists": [], "issues": []}), \
@@ -320,8 +326,9 @@ def test_download_picard_called_per_album(tmp_dirs):
     _setup_plan(job_id, albums)
 
     picard_calls = []
-    # Each call to list_album_dirs returns a single dir (simulating incremental drain).
-    dirs_iter = iter([[d] for d in album_dirs])
+    # before/after pairs: [], [d0], [], [d1], [], [d2]
+    dirs_seq = [item for d in album_dirs for item in ([], [d])]
+    dirs_iter = iter(dirs_seq)
 
     def record_picard(source_dir, **kwargs):
         picard_calls.append(source_dir)

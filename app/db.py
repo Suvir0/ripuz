@@ -190,6 +190,28 @@ def purge_stale_jobs(cutoff_hours: int = 12) -> list[int]:
     return ids
 
 
+# ── cross-job dedup ───────────────────────────────────────────────────────────
+
+def claimed_album_ids(exclude_job_id: int) -> set[str]:
+    """Return Qobuz album ids claimed by non-terminal jobs other than exclude_job_id."""
+    placeholders = ",".join("?" * len(_TERMINAL_STATUSES))
+    with _conn() as conn:
+        rows = conn.execute(
+            f"SELECT plan FROM jobs WHERE status NOT IN ({placeholders}) AND id != ?",
+            (*_TERMINAL_STATUSES, exclude_job_id),
+        ).fetchall()
+    ids: set[str] = set()
+    for r in rows:
+        try:
+            plan = json.loads(r["plan"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        for a in plan.get("albums", []):
+            if a.get("id"):
+                ids.add(str(a["id"]))
+    return ids
+
+
 # ── album_cache ────────────────────────────────────────────────────────────────
 
 def cache_track_album(track_id: str, album_id: str, album_url: str) -> None:

@@ -113,7 +113,7 @@ def test_pipeline_passes_quality_to_run_download(tmp_dirs):
     album_dirs = _one_album_dir(tmp_dirs / "downloads")
 
     with patch("app.pipeline.run_download", return_value=_ok_download()) as mock_dl, \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={
@@ -131,7 +131,7 @@ def test_pipeline_uses_default_quality_when_not_set(tmp_dirs):
     album_dirs = _one_album_dir(tmp_dirs / "downloads")
 
     with patch("app.pipeline.run_download", return_value=_ok_download()) as mock_dl, \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={

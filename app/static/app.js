@@ -181,9 +181,11 @@ function formatPlan(planJson) {
   try { plan = JSON.parse(planJson); } catch { return ''; }
   const albums = plan.albums || [];
   const skipped = plan.skipped_existing || 0;
+  const dup = plan.skipped_duplicate || 0;
   const est = plan.est_gb || 0;
   const capped = plan.capped ? ` · capped at ${plan.cap}` : '';
-  return `${albums.length} album(s) to download${capped} · ${skipped} already present · ~${est} GB`;
+  const dupMsg = dup > 0 ? ` · ${dup} claimed by other job(s)` : '';
+  return `${albums.length} album(s) to download${capped} · ${skipped} already present${dupMsg} · ~${est} GB`;
 }
 
 function renderJobs() {

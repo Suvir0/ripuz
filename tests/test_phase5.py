@@ -135,7 +135,7 @@ def test_playlist_pipeline_success(tmp_dirs):
     job_id = db.create_job("playlist", "https://play.qobuz.com/playlist/1")
     album_dirs = _two_album_dirs(tmp_dirs / "downloads")
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": ["Drake"], "issues": []}), \
@@ -158,7 +158,7 @@ def test_playlist_pipeline_picard_failure_still_moves(tmp_dirs):
     job_id = db.create_job("playlist", "https://play.qobuz.com/playlist/3")
     album_dirs = _two_album_dirs(tmp_dirs / "downloads")
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_fail_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": [], "issues": []}), \
@@ -173,7 +173,7 @@ def test_playlist_pipeline_no_files_moved_is_error(tmp_dirs):
     job_id = db.create_job("playlist", "https://play.qobuz.com/playlist/30")
     album_dirs = _two_album_dirs(tmp_dirs / "downloads")
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_empty_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 0, "artists": [], "issues": []}), \
@@ -184,7 +184,7 @@ def test_playlist_pipeline_no_files_moved_is_error(tmp_dirs):
 
 
 def test_playlist_pipeline_per_album_picard_calls(tmp_dirs):
-    """run_picard is called once per album directory."""
+    """run_picard is called once per album directory found after the download."""
     job_id = db.create_job("playlist", "https://play.qobuz.com/playlist/31")
     album_dirs = _two_album_dirs(tmp_dirs / "downloads")
     picard_calls = []
@@ -194,7 +194,7 @@ def test_playlist_pipeline_per_album_picard_calls(tmp_dirs):
         return _ok_picard()
 
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", side_effect=record_picard), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 2, "artists": [], "issues": []}), \
@@ -208,7 +208,7 @@ def test_playlist_pipeline_logs_steps(tmp_dirs):
     job_id = db.create_job("playlist", "https://play.qobuz.com/playlist/4")
     album_dirs = _two_album_dirs(tmp_dirs / "downloads")
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
-         patch("app.pipeline.list_album_dirs", return_value=album_dirs), \
+         patch("app.pipeline.list_album_dirs", side_effect=[[], album_dirs]), \
          patch("app.pipeline.run_picard", return_value=_ok_picard()), \
          patch("app.pipeline.move_album", return_value=_ok_move()), \
          patch("app.pipeline.verify_structure", return_value={"flac_count": 0, "artists": [], "issues": []}), \
@@ -263,7 +263,7 @@ def test_expand_albums_download_success(tmp_dirs):
     album_dirs = _two_album_dirs(tmp_dirs / "downloads")
     _setup_plan(job_id, albums)
 
-    dirs_iter = iter([[d] for d in album_dirs])
+    dirs_iter = iter([[], [album_dirs[0]], [], [album_dirs[1]]])
 
     with patch("app.pipeline.run_download", return_value=_ok_download()), \
          patch("app.pipeline.list_album_dirs", side_effect=lambda _: next(dirs_iter)), \
@@ -286,7 +286,8 @@ def test_expand_albums_download_continues_after_one_failure(tmp_dirs):
         d.mkdir(parents=True, exist_ok=True)
     _setup_plan(job_id, albums)
 
-    dirs_iter = iter([[d] for d in album_dirs])
+    # good1 ok: [], [d0]; bad1 fails: []; good2 ok: [], [d2]
+    dirs_iter = iter([[], [album_dirs[0]], [], [], [album_dirs[2]]])
 
     def download_by_url(url, **kwargs):
         if "bad1" in url:

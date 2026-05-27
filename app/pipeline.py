@@ -47,15 +47,14 @@ def _log(job_id: int, msg: str, callback: Optional[LogCallback] = None):
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _tag_and_move(job_id: int) -> tuple[int, int]:
+def _tag_and_move(job_id: int, album_dirs: list[Path]) -> tuple[int, int]:
     """
-    For every album directory found in DOWNLOADS_DIR:
-      1. Run Picard to enrich tags in place (best-effort; proceed even on failure).
-      2. Move files to MUSIC_DIR using mutagen-read tags.
+    Tag and move an explicit list of album directories (caller provides the diff).
+    1. Run Picard to enrich tags in place (best-effort; proceed even on failure).
+    2. Move files to MUSIC_DIR using mutagen-read tags.
 
     Returns (total_moved, total_skipped).
     """
-    album_dirs = list_album_dirs(config.DOWNLOADS_DIR)
     _log(job_id, f"[pipeline] {len(album_dirs)} album dir(s) to tag and move")
 
     total_moved = 0
@@ -112,13 +111,15 @@ def _estimate_gb(albums: list[dict], quality: int) -> float:
     return round(total_secs / 60.0 * mb_per_min / 1024.0, 1)
 
 
-def _build_plan(albums: list[dict], quality: int) -> dict:
+def _build_plan(albums: list[dict], quality: int, job_id: int) -> dict:
     """
-    Filter out albums already present in MUSIC_DIR, apply the per-job album cap,
-    and return a plan dict ready for JSON serialisation.
+    Filter out albums already present in MUSIC_DIR or claimed by another active job,
+    apply the per-job album cap, and return a plan dict ready for JSON serialisation.
     """
+    claimed = db.claimed_album_ids(job_id)
     to_download: list[dict] = []
     skipped_count = 0
+    skipped_duplicate = 0
     for album in albums:
         if album_already_present(
             config.MUSIC_DIR,
@@ -127,6 +128,8 @@ def _build_plan(albums: list[dict], quality: int) -> dict:
             album.get("tracks_count") or None,
         ):
             skipped_count += 1
+        elif str(album.get("id", "")) in claimed:
+            skipped_duplicate += 1
         else:
             to_download.append(album)
 
@@ -139,6 +142,7 @@ def _build_plan(albums: list[dict], quality: int) -> dict:
     return {
         "albums": to_download,
         "skipped_existing": skipped_count,
+        "skipped_duplicate": skipped_duplicate,
         "est_gb": _estimate_gb(to_download, quality),
         "quality": quality,
         "capped": capped,
@@ -150,13 +154,15 @@ def _store_plan(job_id: int, plan: dict, label: str) -> bool:
     """Persist plan, log summary, set status awaiting_confirm. Returns True if albums remain."""
     count = len(plan["albums"])
     skipped = plan["skipped_existing"]
+    dup = plan.get("skipped_duplicate", 0)
     est = plan["est_gb"]
     capped = plan.get("capped", False)
     cap_msg = f" (capped at {plan['cap']})" if capped else ""
+    dup_msg = f", {dup} claimed by another job" if dup > 0 else ""
     _log(
         job_id,
         f"[pipeline/{label}] plan ready: {count} album(s) to download{cap_msg}, "
-        f"{skipped} already present, ~{est} GB estimated",
+        f"{skipped} already present{dup_msg}, ~{est} GB estimated",
     )
     db.set_job_plan(job_id, json.dumps(plan))
     db.update_job(job_id, status="awaiting_confirm")
@@ -194,6 +200,8 @@ def _download_album_list(
         _log(job_id, f"[pipeline/{label}] ({i}/{len(albums)}) downloading: {desc}")
         db.update_job(job_id, status="downloading")
 
+        before = set(list_album_dirs(config.DOWNLOADS_DIR))
+
         dl_result = run_download(
             url,
             downloads_dir=config.DOWNLOADS_DIR,
@@ -212,8 +220,9 @@ def _download_album_list(
             total_failed += 1
             continue
 
-        # Incremental tag + move + clean after each album so scratch stays small.
-        moved, skipped = _tag_and_move(job_id)
+        # Tag + move only dirs that appeared after this specific download.
+        new_dirs = sorted(set(list_album_dirs(config.DOWNLOADS_DIR)) - before)
+        moved, skipped = _tag_and_move(job_id, new_dirs)
         total_moved += moved
         total_skipped += skipped
         clean_empty_dirs(config.DOWNLOADS_DIR)
@@ -271,6 +280,8 @@ def _simple_download_pipeline(
     _log(job_id, f"[pipeline/{label}] downloading: {url}")
     db.update_job(job_id, status="downloading")
 
+    before = set(list_album_dirs(config.DOWNLOADS_DIR))
+
     dl_result = run_download(
         url,
         downloads_dir=config.DOWNLOADS_DIR,
@@ -292,7 +303,8 @@ def _simple_download_pipeline(
 
     _log(job_id, f"[pipeline/{label}] download done — starting per-album tagging")
 
-    total_moved, total_skipped = _tag_and_move(job_id)
+    new_dirs = sorted(set(list_album_dirs(config.DOWNLOADS_DIR)) - before)
+    total_moved, total_skipped = _tag_and_move(job_id, new_dirs)
 
     stats = verify_structure(config.MUSIC_DIR)
     _log(
@@ -369,7 +381,7 @@ def run_discography_resolve(job_id: int, artist_url: str) -> bool:
         return False
 
     _log(job_id, f"[pipeline/discography] found {len(albums)} album(s) on Qobuz")
-    plan = _build_plan(albums, get_quality())
+    plan = _build_plan(albums, get_quality(), job_id)
     return _store_plan(job_id, plan, "discography")
 
 
@@ -393,7 +405,7 @@ def run_expand_albums_resolve(job_id: int, playlist_url: str) -> bool:
         return False
 
     _log(job_id, f"[pipeline/expand] found {len(albums)} unique album(s) in playlist")
-    plan = _build_plan(albums, get_quality())
+    plan = _build_plan(albums, get_quality(), job_id)
     return _store_plan(job_id, plan, "expand")
 
 
@@ -417,7 +429,7 @@ def run_expand_discographies_resolve(job_id: int, playlist_url: str) -> bool:
         return False
 
     _log(job_id, f"[pipeline/expand-disco] found {len(albums)} unique album(s) across all artists")
-    plan = _build_plan(albums, get_quality())
+    plan = _build_plan(albums, get_quality(), job_id)
     return _store_plan(job_id, plan, "expand-disco")
 
 
