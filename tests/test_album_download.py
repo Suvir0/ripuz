@@ -222,3 +222,19 @@ def test_api_album_job_requires_url():
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/api/jobs", json={"type": "album", "url": ""})
     assert resp.status_code == 400
+
+
+# ── no-token pre-check ─────────────────────────────────────────────────────────
+
+def test_album_pipeline_no_token_returns_error(tmp_dirs):
+    """_simple_download_pipeline must fail fast with a clear error when no token is set."""
+    from app import db as db_mod
+    db_mod.set_setting("qobuz_token", "")   # clear the fixture-seeded token
+
+    job_id = db.create_job("album", "https://play.qobuz.com/album/no_token")
+    ok = run_album_pipeline(job_id, "https://play.qobuz.com/album/no_token")
+
+    assert ok is False
+    job = db.get_job(job_id)
+    assert job["status"] == "error"
+    assert "no Qobuz token" in job["log"]

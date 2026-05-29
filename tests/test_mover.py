@@ -307,3 +307,83 @@ def test_move_album_skips_path_escape_symlink(tmp_path):
     assert len(result.skipped) == 1
     assert result.errors
     assert not (outside / "Album" / "Track.FLAC").exists()
+
+
+# ── same-title collision disambiguation ───────────────────────────────────────
+
+def test_move_album_duplicate_title_with_track_numbers(tmp_path):
+    """Two tracks sharing a sanitized title are disambiguated via tracknumber tag."""
+    from mutagen.flac import FLAC as MutagenFLAC
+
+    dl = tmp_path / "downloads" / "Artist" / "Album"
+    music = tmp_path / "music"
+    dl.mkdir(parents=True, exist_ok=True)
+    music.mkdir(parents=True, exist_ok=True)
+
+    def _make_numbered_flac(filename, tracknumber):
+        path = dl / filename
+        _write_minimal_flac(path)
+        tags = MutagenFLAC(path)
+        tags["artist"] = ["Test Artist"]
+        tags["album"] = ["Test Album"]
+        tags["title"] = ["Intro"]          # same title for both tracks
+        tags["tracknumber"] = [str(tracknumber)]
+        tags.save()
+        return path
+
+    _make_numbered_flac("t01.flac", "1")
+    _make_numbered_flac("t02.flac", "2")
+
+    result = move_album(dl, music)
+
+    # Both files must be moved — no data loss
+    assert len(result.moved) == 2
+    assert not result.skipped
+
+    # The destinations must be distinct
+    moved_names = {p.name for p in result.moved}
+    assert len(moved_names) == 2, f"Expected 2 distinct names, got: {moved_names}"
+
+
+def test_move_album_duplicate_title_fallback_counter(tmp_path):
+    """Without track number tags the counter suffix prevents data loss."""
+    from mutagen.flac import FLAC as MutagenFLAC
+
+    dl = tmp_path / "downloads" / "Artist" / "Album"
+    music = tmp_path / "music"
+    dl.mkdir(parents=True, exist_ok=True)
+    music.mkdir(parents=True, exist_ok=True)
+
+    for idx, filename in enumerate(["a.flac", "b.flac", "c.flac"]):
+        path = dl / filename
+        _write_minimal_flac(path)
+        tags = MutagenFLAC(path)
+        tags["artist"] = ["Test Artist"]
+        tags["album"] = ["Test Album"]
+        tags["title"] = ["Hidden Track"]   # all three share the same title; no tracknumber
+        tags.save()
+
+    result = move_album(dl, music)
+
+    assert len(result.moved) == 3
+    assert not result.skipped
+    # All destinations must be distinct
+    assert len({p.name for p in result.moved}) == 3
+
+
+def test_move_album_no_collision_unchanged_layout(tmp_path):
+    """When titles are unique the output path must be exactly Title.FLAC (no suffix)."""
+    dl = tmp_path / "downloads" / "Artist" / "Album"
+    music = tmp_path / "music"
+    dl.mkdir(parents=True, exist_ok=True)
+    music.mkdir(parents=True, exist_ok=True)
+
+    _make_tagged_flac(dl / "a.flac", title="Opening")
+    _make_tagged_flac(dl / "b.flac", title="Closing")
+
+    result = move_album(dl, music)
+
+    assert len(result.moved) == 2
+    names = {p.name for p in result.moved}
+    assert "Opening.FLAC" in names
+    assert "Closing.FLAC" in names

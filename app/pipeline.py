@@ -282,6 +282,12 @@ def _simple_download_pipeline(
     label: str,
     cancel_check: Callable[[], bool],
 ) -> bool:
+    token = get_token()
+    if not token:
+        _log(job_id, f"[pipeline/{label}] error: no Qobuz token configured")
+        db.update_job(job_id, status="error")
+        return False
+
     if not _check_disk(job_id, label):
         db.update_job(job_id, status="error")
         return False

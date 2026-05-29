@@ -34,4 +34,9 @@ def tmp_dirs(tmp_path, monkeypatch):
     cfg.ensure_dirs()
     dbmod.init_db(cfg.DB_FILE)
 
+    # Seed a default test token so the token pre-check in _simple_download_pipeline
+    # passes for all existing tests (tests that explicitly test the no-token path
+    # should patch get_token or clear the setting themselves).
+    dbmod.set_setting("qobuz_token", "test-token-fixture")
+
     yield tmp_path

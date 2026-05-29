@@ -8,6 +8,12 @@ After Picard tags files in place the mover reads each file's embedded tags
 
 If a tag is missing we fall back to safe defaults so no file is ever silently
 dropped. Spaces and path-unsafe characters are replaced with underscores.
+
+Collision handling: when two source tracks within the same album share the
+same sanitized title (e.g. multi-disc reissues, hidden tracks, interludes),
+the destination is disambiguated using disc+track-number tags to form e.g.
+``Title_(1-07).FLAC``.  Only colliding files receive the suffix; the common
+single-title-per-album case is unchanged.
 """
 import logging
 import re
@@ -51,21 +57,32 @@ class MoveResult:
     errors: list[str] = field(default_factory=list)
 
 
+def _find_flac_files(root: Path) -> list[Path]:
+    """Return sorted, deduplicated FLAC paths under root (case-insensitive suffix)."""
+    return sorted({p for p in root.rglob("*") if p.suffix.lower() == ".flac"})
+
+
 def move_album(album_dir: Path, music_dir: Path) -> MoveResult:
     """
     Read FLAC tags from every .flac/.FLAC file under album_dir and move each
     one to music_dir/<artist>/<album>/<title>.FLAC.
 
     Files that cannot be read are skipped (not moved) and logged.
+
+    When two tracks within the same album share the same sanitized title, the
+    destination is disambiguated via disc/track-number tags to avoid silently
+    overwriting the first file with the second.
     """
     result = MoveResult()
 
-    flacs = sorted(album_dir.rglob("*.flac")) + sorted(album_dir.rglob("*.FLAC"))
+    flacs = _find_flac_files(album_dir)
     if not flacs:
         logger.debug("move_album: no FLAC files found in %s", album_dir)
         return result
 
     music_root = music_dir.resolve()
+    # Track destination paths used in this call to detect same-title collisions.
+    used: set[Path] = set()
 
     for src in flacs:
         try:
@@ -84,6 +101,23 @@ def move_album(album_dir: Path, music_dir: Path) -> MoveResult:
         title = _sanitize(_first_tag(tags, "title", default=src.stem))
 
         dest = music_dir / artist / album / f"{title}.FLAC"
+
+        # Disambiguate if two tracks in this batch share the same sanitized title.
+        if dest in used:
+            disc = _first_tag(tags, "discnumber", "disc")
+            track = _first_tag(tags, "tracknumber", "track")
+            if disc and track:
+                suffix = f"_({_sanitize(disc)}-{_sanitize(track).zfill(2)})"
+            elif track:
+                suffix = f"_({_sanitize(track).zfill(2)})"
+            else:
+                # Last resort: integer counter
+                counter = 2
+                while (music_dir / artist / album / f"{title}_({counter}).FLAC") in used:
+                    counter += 1
+                suffix = f"_({counter})"
+            dest = music_dir / artist / album / f"{title}{suffix}.FLAC"
+            logger.debug("move_album: title collision — using disambiguated dest: %s", dest)
 
         # Guard: ensure dest stays within music_dir (crafted tags could escape)
         try:
@@ -106,6 +140,8 @@ def move_album(album_dir: Path, music_dir: Path) -> MoveResult:
                 continue
             logger.debug("move_album: destination exists, overwriting: %s", dest)
             dest.unlink()
+
+        used.add(dest)
 
         try:
             shutil.move(str(src), str(dest))

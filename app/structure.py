@@ -5,11 +5,16 @@ Also cleans up empty directories left behind by Picard.
 import shutil
 from pathlib import Path
 
-from app.mover import sanitize_path
+from app.mover import sanitize_path, _find_flac_files
 
 
 def find_flac_files(root: Path) -> list[Path]:
-    return sorted(root.rglob("*.flac")) + sorted(root.rglob("*.FLAC"))
+    """Return sorted, deduplicated FLAC paths under root (case-insensitive suffix).
+
+    Delegates to ``mover._find_flac_files`` so both modules share one
+    implementation and avoid double-counting on case-insensitive filesystems.
+    """
+    return _find_flac_files(root)
 
 
 def list_album_dirs(root: Path) -> list[Path]:

@@ -157,17 +157,28 @@ def test_worker_loop_calls_purge_stale_jobs():
         return []
 
     with patch("app.jobs.db.purge_stale_jobs", side_effect=purge_and_stop), \
-         patch("app.jobs.db.get_queued_jobs", return_value=[]):
+         patch("app.jobs.db.get_runnable_jobs", return_value=[]):
         _worker_loop(stop, poll_interval=0)
 
     assert len(purge_calls) >= 1
 
 
-def test_worker_loop_logs_purged_jobs(capsys):
+def test_worker_loop_logs_purged_jobs(caplog):
+    """When purge_stale_jobs returns IDs the worker must log a warning for them."""
+    import logging
     stop = threading.Event()
     purged_ids = [42, 43]
-    with patch("app.jobs.db.purge_stale_jobs", return_value=purged_ids), \
-         patch("app.jobs.db.get_queued_jobs", return_value=[]):
-        stop.set()
-        _worker_loop(stop, poll_interval=0)
-    # The warning is emitted via logger, not stdout — just verify no exception raised
+
+    def purge_and_stop():
+        stop.set()   # stop after this first (and only) iteration
+        return purged_ids
+
+    with patch("app.jobs.db.purge_stale_jobs", side_effect=purge_and_stop), \
+         patch("app.jobs.db.get_runnable_jobs", return_value=[]):
+        with caplog.at_level(logging.WARNING, logger="app.jobs"):
+            _worker_loop(stop, poll_interval=0)
+
+    # The worker must emit a warning mentioning the purged IDs.
+    assert any("42" in r.message or "43" in r.message for r in caplog.records), (
+        f"Expected purge warning in logs, got: {[r.message for r in caplog.records]}"
+    )

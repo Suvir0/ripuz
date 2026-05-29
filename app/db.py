@@ -109,13 +109,35 @@ def update_job(job_id: int, **fields) -> None:
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return
-    set_clause = ", ".join(f"{k}=?" for k in updates)
-    values = list(updates.values()) + [job_id]
+
+    # Separate status changes from log-only updates so we can guard against
+    # resurrecting a cancelled job (an in-flight pipeline phase must not flip
+    # a cancelled job back to an active status).
+    new_status = updates.pop("status", None)
     with _conn() as conn:
-        conn.execute(
-            f"UPDATE jobs SET {set_clause}, updated_at=datetime('now') WHERE id=?",
-            values,
-        )
+        if new_status is not None:
+            # Apply the status change only when the row is not already cancelled.
+            set_parts = ["status=?", "updated_at=datetime('now')"]
+            vals: list = [new_status]
+            if updates:
+                # Include any remaining field (e.g. log) in the same statement.
+                for k, v in updates.items():
+                    set_parts.append(f"{k}=?")
+                    vals.append(v)
+            vals.append(job_id)
+            conn.execute(
+                f"UPDATE jobs SET {', '.join(set_parts)} "
+                f"WHERE id=? AND status != 'cancelled'",
+                vals,
+            )
+        elif updates:
+            # Log-only update — always allowed regardless of status.
+            set_clause = ", ".join(f"{k}=?" for k in updates)
+            vals2 = list(updates.values()) + [job_id]
+            conn.execute(
+                f"UPDATE jobs SET {set_clause}, updated_at=datetime('now') WHERE id=?",
+                vals2,
+            )
 
 
 def set_job_plan(job_id: int, plan_json: str) -> None:

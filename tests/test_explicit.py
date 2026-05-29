@@ -736,18 +736,45 @@ class TestExplicitUpgradeJobRouting:
 # ── API validation ─────────────────────────────────────────────────────────────
 
 class TestApiValidation:
-    """Light-weight checks on api_create_job logic without starting a server."""
+    """Behavioural API checks via TestClient (not source-text inspection)."""
 
-    def test_explicit_upgrade_in_valid_types(self):
-        from app.main import api_create_job
-        # Just ensure the function imports without error — full type list is tested
-        # in integration. We verify the set contains our new type.
-        import inspect
-        src = inspect.getsource(api_create_job)
-        assert "explicit_upgrade" in src
+    def test_explicit_upgrade_in_valid_types(self, tmp_dirs):
+        """explicit_upgrade is accepted as a job type by the API."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        with patch("app.jobs.start_worker"), patch("app.jobs.stop_worker"):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.post("/api/jobs", json={
+                    "type": "explicit_upgrade",
+                    "url": "https://play.qobuz.com/playlist/123",
+                })
+        assert resp.status_code == 200
+        assert "job_id" in resp.json()
 
-    def test_library_sentinel_in_source(self):
-        from app.main import api_create_job
-        import inspect
-        src = inspect.getsource(api_create_job)
-        assert '"library"' in src
+    def test_library_sentinel_accepted_for_explicit_upgrade(self, tmp_dirs):
+        """The sentinel string 'library' is accepted only for explicit_upgrade jobs."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        with patch("app.jobs.start_worker"), patch("app.jobs.stop_worker"):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.post("/api/jobs", json={
+                    "type": "explicit_upgrade",
+                    "url": "library",
+                })
+        assert resp.status_code == 200
+        assert "job_id" in resp.json()
+
+    def test_library_sentinel_rejected_for_other_types(self, tmp_dirs):
+        """'library' must be rejected for non-explicit-upgrade job types."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        with patch("app.jobs.start_worker"), patch("app.jobs.stop_worker"):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.post("/api/jobs", json={
+                    "type": "playlist",
+                    "url": "library",
+                })
+        assert resp.status_code == 400
