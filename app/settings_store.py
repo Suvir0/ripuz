@@ -12,6 +12,7 @@ _DOWNLOADS_DIR_KEY = "downloads_dir"
 _MUSIC_DIR_KEY = "music_dir"
 _QUALITY_KEY = "music_quality"
 _DOWNLOAD_LYRICS_KEY = "download_lyrics"
+_PREFER_EXPLICIT_KEY = "prefer_explicit"
 
 # All valid Qobuz quality levels accepted by qobuz-dl -q
 VALID_QUALITIES = (5, 6, 7, 27)
@@ -32,10 +33,16 @@ def get_download_lyrics() -> bool:
     return db.get_setting(_DOWNLOAD_LYRICS_KEY, "false") == "true"
 
 
+def get_prefer_explicit() -> bool:
+    """Return whether the prefer-explicit toggle is on (default off)."""
+    return db.get_setting(_PREFER_EXPLICIT_KEY, "false") == "true"
+
+
 def save_settings(token: str, downloads_dir: str | None = None,
                   music_dir: str | None = None,
                   quality: int | None = None,
-                  download_lyrics: bool | None = None) -> None:
+                  download_lyrics: bool | None = None,
+                  prefer_explicit: bool | None = None) -> None:
     db.set_setting(_QOBUZ_TOKEN_KEY, token)
     if downloads_dir:
         db.set_setting(_DOWNLOADS_DIR_KEY, downloads_dir)
@@ -45,6 +52,8 @@ def save_settings(token: str, downloads_dir: str | None = None,
         db.set_setting(_QUALITY_KEY, str(quality))
     if download_lyrics is not None:
         db.set_setting(_DOWNLOAD_LYRICS_KEY, "true" if download_lyrics else "false")
+    if prefer_explicit is not None:
+        db.set_setting(_PREFER_EXPLICIT_KEY, "true" if prefer_explicit else "false")
     _write_qobuz_dl_config()
 
 
@@ -55,6 +64,7 @@ def get_settings() -> dict:
         "music_dir": db.get_setting(_MUSIC_DIR_KEY, str(config.MUSIC_DIR)),
         "music_quality": get_quality(),
         "download_lyrics": get_download_lyrics(),
+        "prefer_explicit": get_prefer_explicit(),
     }
 
 

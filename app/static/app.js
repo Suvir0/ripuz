@@ -44,6 +44,7 @@ const TYPE_META = {
   playlist:               { label: 'playlist',           icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>` },
   expand_albums:          { label: 'playlist → albums',  icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>` },
   expand_discographies:   { label: 'playlist → discos',  icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>` },
+  explicit_upgrade:       { label: 'fix clean → explicit', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>` },
 };
 
 function typeIcon(type) {
@@ -73,6 +74,7 @@ async function loadSettings() {
       document.getElementById('music_quality').value = String(s.music_quality);
     }
     document.getElementById('download_lyrics').checked = !!s.download_lyrics;
+    document.getElementById('prefer_explicit').checked = !!s.prefer_explicit;
   } catch (e) {
     console.error('loadSettings', e);
   }
@@ -87,6 +89,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
     music_dir: document.getElementById('music_dir').value.trim(),
     music_quality: parseInt(document.getElementById('music_quality').value, 10),
     download_lyrics: document.getElementById('download_lyrics').checked,
+    prefer_explicit: document.getElementById('prefer_explicit').checked,
   };
   try {
     const res = await fetch('/api/settings', {
@@ -109,19 +112,49 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
 /* ── mode selector ──────────────────────────────────────────────── */
 let selectedMode = 'track';
 
+const libraryScanField = document.getElementById('library-scan-field');
+const libraryScanToggle = document.getElementById('library-scan-toggle');
+const urlInput = document.getElementById('playlist-url');
+
+function updateExplicitUpgradeUI() {
+  if (selectedMode !== 'explicit_upgrade') {
+    libraryScanField.style.display = 'none';
+    urlInput.required = true;
+    return;
+  }
+  libraryScanField.style.display = '';
+  if (libraryScanToggle.checked) {
+    urlInput.required = false;
+    urlInput.value = '';
+    urlInput.disabled = true;
+  } else {
+    urlInput.required = true;
+    urlInput.disabled = false;
+  }
+}
+
+libraryScanToggle.addEventListener('change', updateExplicitUpgradeUI);
+
 document.querySelectorAll('.mode-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     selectedMode = btn.dataset.mode;
-    document.getElementById('playlist-url').placeholder = btn.dataset.placeholder;
+    urlInput.placeholder = btn.dataset.placeholder;
+    libraryScanToggle.checked = false;
+    urlInput.disabled = false;
+    updateExplicitUpgradeUI();
   });
 });
 
 /* ── add form ───────────────────────────────────────────────────── */
 document.getElementById('add-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const url = document.getElementById('playlist-url').value.trim();
+  // For explicit_upgrade with library scan, use the "library" sentinel instead of a URL.
+  let url = urlInput.value.trim();
+  if (selectedMode === 'explicit_upgrade' && libraryScanToggle.checked) {
+    url = 'library';
+  }
   if (!url) return;
   try {
     const res = await fetch('/api/jobs', {
@@ -132,7 +165,10 @@ document.getElementById('add-form').addEventListener('submit', async (e) => {
     const data = await res.json();
     if (res.ok) {
       flash('add-msg', `✓ job #${data.job_id} queued`, 'ok');
-      document.getElementById('playlist-url').value = '';
+      urlInput.value = '';
+      libraryScanToggle.checked = false;
+      urlInput.disabled = false;
+      updateExplicitUpgradeUI();
       setTimeout(() => showTab('jobs'), 350);
       loadJobs();
     } else {

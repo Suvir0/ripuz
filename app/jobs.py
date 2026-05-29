@@ -26,11 +26,13 @@ from app.pipeline import (
     run_expand_albums_download,
     run_expand_discographies_resolve,
     run_expand_discographies_download,
+    run_explicit_upgrade_resolve,
+    run_explicit_upgrade_download,
 )
 
 logger = logging.getLogger(__name__)
 
-_BULK_TYPES = {"discography", "expand_albums", "expand_discographies"}
+_BULK_TYPES = {"discography", "expand_albums", "expand_discographies", "explicit_upgrade"}
 
 _worker_thread: threading.Thread | None = None
 _stop_event = threading.Event()
@@ -81,6 +83,8 @@ def _process_job(job: dict):
                     run_expand_albums_resolve(job_id, url)
                 elif job_type == "expand_discographies":
                     run_expand_discographies_resolve(job_id, url)
+                elif job_type == "explicit_upgrade":
+                    run_explicit_upgrade_resolve(job_id, url)
             elif status == "confirmed":
                 if job_type == "discography":
                     run_discography_download(job_id, cancel_check)
@@ -88,6 +92,8 @@ def _process_job(job: dict):
                     run_expand_albums_download(job_id, cancel_check)
                 elif job_type == "expand_discographies":
                     run_expand_discographies_download(job_id, cancel_check)
+                elif job_type == "explicit_upgrade":
+                    run_explicit_upgrade_download(job_id, cancel_check)
         elif job_type == "playlist":
             run_playlist_pipeline(job_id, url, cancel_check)
         elif job_type == "track":

@@ -7,6 +7,10 @@ import logging
 import re
 from typing import Optional
 
+from mutagen.flac import FLAC
+from app.structure import find_flac_files
+from app.mover import _first_tag
+
 from app import config, db
 
 logger = logging.getLogger(__name__)
@@ -247,6 +251,192 @@ class QobuzClient:
                 seen.add(artist_id)
                 artist_ids.append(artist_id)
         return artist_ids
+
+    # ── search ────────────────────────────────────────────────────────────────
+
+    def search_tracks(self, query: str, limit: int = 20) -> dict:
+        """Search Qobuz tracks. Returns the raw API response dict."""
+        self._ensure_client()
+        try:
+            return self._client.search_tracks(query, limit=limit) or {}
+        except Exception as exc:
+            logger.warning("search_tracks failed (%s)", exc)
+            return {}
+
+    def search_albums(self, query: str, limit: int = 20) -> dict:
+        """Search Qobuz albums. Returns the raw API response dict."""
+        self._ensure_client()
+        try:
+            return self._client.search_albums(query, limit=limit) or {}
+        except Exception as exc:
+            logger.warning("search_albums failed (%s)", exc)
+            return {}
+
+    # ── explicit-upgrade plan builders ────────────────────────────────────────
+
+    def playlist_to_explicit_album_plan(
+        self, playlist_url: str
+    ) -> tuple[list[dict], list[str]]:
+        """
+        Walk a playlist; for every clean track (parental_warning falsy) search for an
+        explicit album twin. Return (albums, report) where:
+          - albums  — list of album dicts ready for _build_plan (deduplicated)
+          - report  — list of human-readable warning strings (no-match, title-mismatch)
+        """
+        from app.explicit import find_explicit_album, normalize
+
+        tracks = self.get_playlist_tracks(playlist_url)
+        seen_album_ids: set[str] = set()
+        albums: list[dict] = []
+        report: list[str] = []
+
+        for track in tracks:
+            if track.get("parental_warning"):
+                # Already explicit — nothing to do.
+                continue
+
+            artist_obj = (track.get("album") or {}).get("artist") or {}
+            artist = artist_obj.get("name", "")
+            title = track.get("title", "")
+            raw_album = track.get("album") or {}
+            clean_album_title = raw_album.get("title", "")
+            duration = track.get("duration") or None
+
+            expl_album = find_explicit_album(
+                self, artist, title,
+                album_title=clean_album_title,
+                duration=duration,
+            )
+
+            if expl_album is None:
+                report.append(
+                    f"no explicit match: {artist} — {title} (album: {clean_album_title})"
+                )
+                continue
+
+            album_id = expl_album.get("id", "")
+            if album_id in seen_album_ids:
+                continue
+            seen_album_ids.add(album_id)
+            albums.append(expl_album)
+
+            # Warn if the explicit album has a meaningfully different title.
+            if normalize(expl_album.get("title", "")) != normalize(clean_album_title):
+                report.append(
+                    f"title mismatch — clean: '{clean_album_title}' → "
+                    f"explicit: '{expl_album.get('title', '')}' "
+                    f"(will land in a different folder; review manually)"
+                )
+
+        return albums, report
+
+    def library_to_explicit_album_plan(
+        self, music_dir
+    ) -> tuple[list[dict], list[str]]:
+        """
+        Walk /music, read ITUNESADVISORY tags from FLAC files, and for every clean file
+        (ITUNESADVISORY==0) search for an explicit album twin.
+        Files with no advisory tag are reported as skipped (not auto-processed).
+        Returns (albums, report).
+        """
+        from pathlib import Path
+        from app.explicit import find_explicit_album, normalize
+
+        music_dir = Path(music_dir)
+        flacs = find_flac_files(music_dir)
+
+        seen_album_ids: set[str] = set()
+        albums: list[dict] = []
+        report: list[str] = []
+
+        for path in flacs:
+            try:
+                tags = FLAC(path)
+            except Exception as exc:
+                report.append(f"cannot read tags: {path.relative_to(music_dir)} — {exc}")
+                continue
+
+            advisory = _first_tag(tags, "itunesadvisory")
+            if advisory == "":
+                report.append(f"no advisory tag (skipped): {path.relative_to(music_dir)}")
+                continue
+            if advisory != "0":
+                # Explicit (1) or unknown non-zero value — leave alone.
+                continue
+
+            artist = _first_tag(tags, "albumartist", "artist", default="Unknown Artist")
+            title = _first_tag(tags, "title", default=path.stem)
+            album_title = _first_tag(tags, "album", default="")
+            duration: Optional[float] = None
+            try:
+                duration = tags.info.length
+            except Exception:
+                pass
+
+            expl_album = find_explicit_album(
+                self, artist, title,
+                album_title=album_title,
+                duration=duration,
+            )
+
+            if expl_album is None:
+                report.append(
+                    f"no explicit match: {artist} — {title} (album: {album_title})"
+                )
+                continue
+
+            album_id = expl_album.get("id", "")
+            if album_id in seen_album_ids:
+                continue
+            seen_album_ids.add(album_id)
+            albums.append(expl_album)
+
+            if normalize(expl_album.get("title", "")) != normalize(album_title):
+                report.append(
+                    f"title mismatch — clean: '{album_title}' → "
+                    f"explicit: '{expl_album.get('title', '')}' "
+                    f"(will land in a different folder; review manually)"
+                )
+
+        return albums, report
+
+    def playlist_to_explicit_track_urls(self, playlist_url: str) -> list[str]:
+        """
+        For the prefer-explicit toggle: return the best Qobuz track URL for every
+        track in the playlist. If a clean track has an explicit twin, substitute
+        its URL; otherwise keep the original URL.
+        """
+        from app.explicit import find_explicit_track
+
+        tracks = self.get_playlist_tracks(playlist_url)
+        urls: list[str] = []
+
+        for track in tracks:
+            track_id = str(track.get("id", ""))
+            if not track_id:
+                continue
+
+            if track.get("parental_warning"):
+                # Already explicit.
+                urls.append(f"https://play.qobuz.com/track/{track_id}")
+                continue
+
+            artist_obj = (track.get("album") or {}).get("artist") or {}
+            artist = artist_obj.get("name", "")
+            title = track.get("title", "")
+            duration = track.get("duration") or None
+
+            expl_track = find_explicit_track(self, artist, title, duration=duration)
+            if expl_track:
+                expl_id = str(expl_track.get("id", ""))
+                if expl_id:
+                    urls.append(f"https://play.qobuz.com/track/{expl_id}")
+                    continue
+
+            # No explicit twin found — use original.
+            urls.append(f"https://play.qobuz.com/track/{track_id}")
+
+        return urls
 
 
 # ── module-level helpers ───────────────────────────────────────────────────────

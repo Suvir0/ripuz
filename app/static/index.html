@@ -887,16 +887,32 @@
             <span class="mode-label">Playlist → discographies</span>
             <span class="mode-desc">Expand each artist to their full catalog</span>
           </button>
+          <button type="button" class="mode-btn" data-mode="explicit_upgrade" data-placeholder="https://play.qobuz.com/playlist/… or leave blank to scan library">
+            <span class="mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </span>
+            <span class="mode-label">Fix clean → explicit</span>
+            <span class="mode-desc">Replace clean tracks with explicit versions</span>
+          </button>
         </div>
       </div>
 
       <form id="add-form">
         <div class="field">
           <div class="field-label">
-            <span>qobuz url <span class="req">·</span></span>
+            <span>qobuz url <span class="req" id="url-req">·</span></span>
             <span class="mono" style="color: var(--faint)">paste full link</span>
           </div>
           <input type="url" id="playlist-url" placeholder="https://play.qobuz.com/track/…" required />
+        </div>
+
+        <!-- shown only in explicit_upgrade mode -->
+        <div class="field" id="library-scan-field" style="display:none;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="library-scan-toggle" />
+            <span>scan my /music library instead of a playlist</span>
+          </label>
+          <div class="field-hint">Leave the URL blank and check this box to find all clean FLACs already in your library and replace them with explicit versions.</div>
         </div>
 
         <div class="btn-row">
@@ -1001,6 +1017,18 @@
             <span>fetch lyrics from LRCLIB for every track</span>
           </label>
           <div class="field-hint">Saves a <code style="font-family:var(--font-mono);font-size:11px;background:var(--paper);padding:1px 5px;border:1px solid var(--line);border-radius:2px;">Title.lrc</code> next to each track. Plex reads sidecar files (Plexamp display needs Plex Pass).</div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <span>prefer explicit tracks</span>
+            <span class="mono" style="color: var(--faint)">clean → explicit</span>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="prefer_explicit" />
+            <span>swap clean tracks for explicit twins on playlist downloads</span>
+          </label>
+          <div class="field-hint">When on, each clean track in a playlist is replaced by its explicit version before downloading. Increases API calls (one search per track) but ensures you never get a censored file going forward.</div>
         </div>
 
         <div class="btn-row">

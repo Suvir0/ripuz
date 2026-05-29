@@ -26,7 +26,7 @@ from app.qobuz_client import make_client, album_url_from_id
 from app.picard import run_picard
 from app.mover import move_album
 from app.structure import clean_empty_dirs, list_album_dirs, verify_structure, album_already_present
-from app.settings_store import get_token, get_quality
+from app.settings_store import get_token, get_quality, get_prefer_explicit
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ LogCallback = Callable[[str], None]
 # Estimated MB downloaded per minute of audio, by Qobuz quality tier.
 _MB_PER_MIN: dict[int, float] = {27: 50.0, 7: 25.0, 6: 10.0, 5: 2.4}
 
-_BULK_TYPES = {"discography", "expand_albums", "expand_discographies"}
+_BULK_TYPES = {"discography", "expand_albums", "expand_discographies", "explicit_upgrade"}
 
 
 def _log(job_id: int, msg: str, callback: Optional[LogCallback] = None):
@@ -111,17 +111,21 @@ def _estimate_gb(albums: list[dict], quality: int) -> float:
     return round(total_secs / 60.0 * mb_per_min / 1024.0, 1)
 
 
-def _build_plan(albums: list[dict], quality: int, job_id: int) -> dict:
+def _build_plan(albums: list[dict], quality: int, job_id: int,
+                skip_present_check: bool = False) -> dict:
     """
     Filter out albums already present in MUSIC_DIR or claimed by another active job,
     apply the per-job album cap, and return a plan dict ready for JSON serialisation.
+
+    skip_present_check=True bypasses the "already present" filter — used by the
+    explicit_upgrade pipeline which wants to re-download even if a clean copy exists.
     """
     claimed = db.claimed_album_ids(job_id)
     to_download: list[dict] = []
     skipped_count = 0
     skipped_duplicate = 0
     for album in albums:
-        if album_already_present(
+        if not skip_present_check and album_already_present(
             config.MUSIC_DIR,
             album.get("artist", ""),
             album.get("title", ""),
@@ -333,10 +337,103 @@ def run_playlist_pipeline(
     playlist_url: str,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> bool:
-    """Download a Qobuz playlist then tag+move with Picard. Returns True on success."""
+    """Download a Qobuz playlist then tag+move with Picard. Returns True on success.
+
+    When the prefer-explicit setting is on, each clean track is replaced by its
+    explicit twin (one qobuz-dl subprocess per track) before downloading.
+    When off (default), a single efficient qobuz-dl call downloads the whole playlist.
+    """
     if cancel_check is None:
         cancel_check = lambda: False
-    return _simple_download_pipeline(job_id, playlist_url, "playlist", cancel_check)
+
+    if not get_prefer_explicit():
+        return _simple_download_pipeline(job_id, playlist_url, "playlist", cancel_check)
+
+    # Prefer-explicit path: resolve individual track URLs, download one at a time.
+    _log(job_id, "[pipeline/playlist] prefer-explicit ON — resolving track URLs")
+    token = get_token()
+    if not token:
+        _log(job_id, "[pipeline/playlist] error: no Qobuz token configured")
+        db.update_job(job_id, status="error")
+        return False
+
+    client = make_client(token)
+    try:
+        track_urls = client.playlist_to_explicit_track_urls(playlist_url)
+    except Exception as exc:
+        _log(job_id, f"[pipeline/playlist] failed to resolve explicit track URLs: {exc}")
+        db.update_job(job_id, status="error")
+        return False
+
+    _log(job_id, f"[pipeline/playlist] downloading {len(track_urls)} track(s) individually")
+
+    quality = get_quality()
+    total_moved = 0
+    total_skipped = 0
+    total_failed = 0
+
+    for i, url in enumerate(track_urls, 1):
+        if cancel_check():
+            _log(job_id, "[pipeline/playlist] cancelled")
+            db.update_job(job_id, status="cancelled")
+            return False
+
+        if not _check_disk(job_id, "playlist"):
+            db.update_job(job_id, status="error")
+            return False
+
+        _log(job_id, f"[pipeline/playlist] ({i}/{len(track_urls)}) {url}")
+        db.update_job(job_id, status="downloading")
+        before = set(list_album_dirs(config.DOWNLOADS_DIR))
+
+        dl_result = run_download(
+            url,
+            downloads_dir=config.DOWNLOADS_DIR,
+            quality=quality,
+            log_callback=lambda l: db.append_job_log(job_id, l),
+            job_id=job_id,
+            cancel_check=cancel_check,
+        )
+
+        if dl_result.cancelled:
+            _log(job_id, "[pipeline/playlist] cancelled during download")
+            db.update_job(job_id, status="cancelled")
+            return False
+
+        if not dl_result.success:
+            _log(job_id, f"[pipeline/playlist] track download failed: {dl_result.error_message}")
+            total_failed += 1
+            continue
+
+        new_dirs = sorted(set(list_album_dirs(config.DOWNLOADS_DIR)) - before)
+        moved, skipped = _tag_and_move(job_id, new_dirs)
+        total_moved += moved
+        total_skipped += skipped
+        clean_empty_dirs(config.DOWNLOADS_DIR)
+
+    stats = verify_structure(config.MUSIC_DIR)
+    _log(
+        job_id,
+        f"[pipeline/playlist] music dir: {stats['flac_count']} FLAC file(s), "
+        f"{len(stats['artists'])} artist(s)",
+    )
+    for issue in stats["issues"]:
+        _log(job_id, f"[pipeline/playlist] warning: {issue}")
+
+    if total_moved == 0:
+        _log(job_id, "[pipeline/playlist] error: no files were moved to music dir")
+        db.update_job(job_id, status="error")
+        return False
+
+    all_ok = total_failed == 0 and total_skipped == 0
+    status = "done" if all_ok else "done_with_warnings"
+    db.update_job(job_id, status=status)
+    _log(
+        job_id,
+        f"[pipeline/playlist] complete (status={status}, moved={total_moved}, "
+        f"skipped={total_skipped}, failed={total_failed})",
+    )
+    return total_failed == 0
 
 
 def run_track_pipeline(
@@ -467,6 +564,59 @@ def run_expand_albums_download(job_id: int, cancel_check: Callable[[], bool]) ->
 
 def run_expand_discographies_download(job_id: int, cancel_check: Callable[[], bool]) -> bool:
     return _run_bulk_download(job_id, "expand-disco", cancel_check)
+
+
+# ── explicit-upgrade pipelines ────────────────────────────────────────────────
+
+def run_explicit_upgrade_resolve(job_id: int, source: str) -> bool:
+    """
+    Resolve phase for explicit_upgrade jobs.
+
+    source is either:
+      - a Qobuz playlist URL  → scan that playlist for clean tracks
+      - the sentinel "library" → scan the local /music directory for clean FLACs
+
+    Builds a plan of explicit-album replacements and sets status awaiting_confirm.
+    The plan log includes a report of no-match tracks and title-mismatch warnings.
+    """
+    label = "explicit"
+    _log(job_id, f"[pipeline/{label}] resolving — source: {source!r}")
+    db.update_job(job_id, status="resolving")
+
+    token = get_token()
+    if not token:
+        _log(job_id, f"[pipeline/{label}] error: no Qobuz token configured")
+        db.update_job(job_id, status="error")
+        return False
+
+    client = make_client(token)
+
+    try:
+        if source == "library":
+            albums, report = client.library_to_explicit_album_plan(config.MUSIC_DIR)
+        else:
+            albums, report = client.playlist_to_explicit_album_plan(source)
+    except Exception as exc:
+        _log(job_id, f"[pipeline/{label}] failed to resolve explicit albums: {exc}")
+        db.update_job(job_id, status="error")
+        return False
+
+    _log(job_id, f"[pipeline/{label}] found {len(albums)} explicit album(s) to download")
+
+    if report:
+        _log(job_id, f"[pipeline/{label}] --- report ({len(report)} item(s)) ---")
+        for line in report:
+            _log(job_id, f"[pipeline/{label}]   {line}")
+        _log(job_id, f"[pipeline/{label}] --- end report ---")
+
+    # skip_present_check=True: we want to download even if a clean copy already exists.
+    plan = _build_plan(albums, get_quality(), job_id, skip_present_check=True)
+    return _store_plan(job_id, plan, label)
+
+
+def run_explicit_upgrade_download(job_id: int, cancel_check: Callable[[], bool]) -> bool:
+    """Download phase for explicit_upgrade jobs (delegates to shared bulk downloader)."""
+    return _run_bulk_download(job_id, "explicit", cancel_check)
 
 
 # ── legacy aliases (kept so existing tests that import these names still work) ─

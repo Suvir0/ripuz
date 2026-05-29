@@ -103,7 +103,10 @@ async def api_save_settings(body: dict):
     download_lyrics: bool | None = None
     if "download_lyrics" in body:
         download_lyrics = bool(body["download_lyrics"])
-    save_settings(token, downloads, music, quality, download_lyrics)
+    prefer_explicit: bool | None = None
+    if "prefer_explicit" in body:
+        prefer_explicit = bool(body["prefer_explicit"])
+    save_settings(token, downloads, music, quality, download_lyrics, prefer_explicit)
     return {"ok": True}
 
 
@@ -167,15 +170,25 @@ async def api_delete_job(job_id: int):
 @app.post("/api/jobs")
 async def api_create_job(body: dict):
     from app.jobs import enqueue
-    VALID_TYPES = {"playlist", "expand_albums", "track", "album", "discography", "expand_discographies"}
+    VALID_TYPES = {
+        "playlist", "expand_albums", "track", "album",
+        "discography", "expand_discographies", "explicit_upgrade",
+    }
     job_type = body.get("type", "playlist")
     url = body.get("url", "").strip()
     if not url:
         return JSONResponse({"error": "url required"}, status_code=400)
     if job_type not in VALID_TYPES:
         return JSONResponse({"error": "invalid type"}, status_code=400)
-    if not is_valid_qobuz_input(url):
+    # explicit_upgrade may use the sentinel "library" (scan local /music dir)
+    # or a normal Qobuz playlist URL — both are valid.
+    if url != "library" and not is_valid_qobuz_input(url):
         return JSONResponse({"error": "url must be a qobuz.com URL or ID"}, status_code=400)
+    if url == "library" and job_type != "explicit_upgrade":
+        return JSONResponse(
+            {"error": "'library' source is only valid for explicit_upgrade jobs"},
+            status_code=400,
+        )
     job_id = enqueue(job_type, url)
     return {"job_id": job_id}
 
