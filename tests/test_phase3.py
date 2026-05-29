@@ -73,6 +73,26 @@ def test_custom_quality_overrides_default():
     assert cmd[idx + 1] == "6"
 
 
+def test_no_db_absent_by_default():
+    cmd = build_download_command("https://example.com/album/1", Path("/dl"))
+    assert "--no-db" not in cmd
+
+
+def test_no_db_flag_present_when_requested():
+    url = "https://example.com/album/1"
+    cmd = build_download_command(url, Path("/dl"), no_db=True)
+    assert "--no-db" in cmd
+    # URL must still be last; no bare '--' separator
+    assert cmd[-1] == url
+    assert "--" not in cmd
+
+
+def test_no_db_flag_is_before_url():
+    url = "https://example.com/album/1"
+    cmd = build_download_command(url, Path("/dl"), no_db=True)
+    assert cmd.index("--no-db") < cmd.index(url)
+
+
 # ── run_download ───────────────────────────────────────────────────────────────
 
 def _make_proc(returncode: int, output_lines: list[str]):

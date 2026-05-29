@@ -58,17 +58,21 @@ def build_download_command(
     quality: int = config.QOBUZ_QUALITY,
     folder_format: str = "{album_artist}/{album_title}",
     track_format: str = "{track_title}",
+    no_db: bool = False,
 ) -> list[str]:
     """Return the argv list for a qobuz-dl dl invocation."""
-    return [
+    cmd = [
         sys.executable, "-m", "qobuz_dl", "dl",
         "-q", str(quality),
         "-d", str(downloads_dir),
         "-ff", folder_format,
         "-tf", track_format,
         "--no-m3u",
-        url,
     ]
+    if no_db:
+        cmd.append("--no-db")
+    cmd.append(url)
+    return cmd
 
 
 def run_download(
@@ -79,6 +83,7 @@ def run_download(
     env_overrides: Optional[dict] = None,
     job_id: Optional[int] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    no_db: bool = False,
 ) -> DownloadResult:
     """
     Run qobuz-dl dl for a single URL and stream output to log_callback.
@@ -86,13 +91,15 @@ def run_download(
 
     cancel_check: zero-arg callable returning True when the job has been cancelled.
     job_id: when provided, the Popen is registered so terminate_job() can kill it.
+    no_db: when True, passes --no-db to qobuz-dl so it ignores its local download
+           database (needed for explicit-upgrade re-downloads).
     """
     if downloads_dir is None:
         downloads_dir = config.DOWNLOADS_DIR
     if cancel_check is None:
         cancel_check = lambda: False
 
-    cmd = build_download_command(url, downloads_dir, quality)
+    cmd = build_download_command(url, downloads_dir, quality, no_db=no_db)
 
     env = os.environ.copy()
     env["XDG_CONFIG_HOME"] = str(config.CONFIG_DIR)

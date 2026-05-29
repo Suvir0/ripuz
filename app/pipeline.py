@@ -181,10 +181,14 @@ def _download_album_list(
     quality: int,
     label: str,
     cancel_check: Callable[[], bool],
+    no_db: bool = False,
 ) -> tuple[int, int, int, bool, bool]:
     """
     Download each album with disk guard + cancel check + incremental tag/move/clean.
     Returns (moved, skipped, failed, was_cancelled, disk_aborted).
+
+    no_db: when True, passes --no-db to qobuz-dl so it ignores its local download
+           database (used by explicit_upgrade to force re-download).
     """
     total_moved = total_skipped = total_failed = 0
 
@@ -213,6 +217,7 @@ def _download_album_list(
             log_callback=lambda l: db.append_job_log(job_id, l),
             job_id=job_id,
             cancel_check=cancel_check,
+            no_db=no_db,
         )
 
         if dl_result.cancelled:
@@ -532,8 +537,16 @@ def run_expand_discographies_resolve(job_id: int, playlist_url: str) -> bool:
 
 # ── bulk pipelines — download phase ──────────────────────────────────────────
 
-def _run_bulk_download(job_id: int, label: str, cancel_check: Callable[[], bool]) -> bool:
-    """Shared download phase: read plan from DB, run _download_album_list."""
+def _run_bulk_download(
+    job_id: int,
+    label: str,
+    cancel_check: Callable[[], bool],
+    no_db: bool = False,
+) -> bool:
+    """Shared download phase: read plan from DB, run _download_album_list.
+
+    no_db: when True, passes --no-db to qobuz-dl (explicit_upgrade only).
+    """
     job = db.get_job(job_id)
     if not job:
         return False
@@ -549,7 +562,7 @@ def _run_bulk_download(job_id: int, label: str, cancel_check: Callable[[], bool]
     _log(job_id, f"[pipeline/{label}] starting download of {len(albums)} album(s)")
 
     moved, skipped, failed, cancelled, disk_aborted = _download_album_list(
-        job_id, albums, quality, label, cancel_check
+        job_id, albums, quality, label, cancel_check, no_db=no_db
     )
     return _finish_bulk(job_id, label, moved, skipped, failed, cancelled, disk_aborted)
 
@@ -615,8 +628,12 @@ def run_explicit_upgrade_resolve(job_id: int, source: str) -> bool:
 
 
 def run_explicit_upgrade_download(job_id: int, cancel_check: Callable[[], bool]) -> bool:
-    """Download phase for explicit_upgrade jobs (delegates to shared bulk downloader)."""
-    return _run_bulk_download(job_id, "explicit", cancel_check)
+    """Download phase for explicit_upgrade jobs (delegates to shared bulk downloader).
+
+    Always passes no_db=True so qobuz-dl ignores its local download database and
+    re-fetches albums even if they were previously downloaded (e.g. as a clean copy).
+    """
+    return _run_bulk_download(job_id, "explicit", cancel_check, no_db=True)
 
 
 # ── legacy aliases (kept so existing tests that import these names still work) ─

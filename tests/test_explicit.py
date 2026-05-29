@@ -690,6 +690,28 @@ class TestExplicitUpgradeDownload:
         job = db.get_job(job_id)
         assert job["status"] in ("done", "done_with_warnings")
 
+    @patch("app.pipeline.clean_empty_dirs")
+    @patch("app.pipeline.move_album", return_value=MoveResult(moved=[Path("/m/a/b/t.FLAC")]))
+    @patch("app.pipeline.run_picard", return_value=PicardResult(success=True))
+    @patch("app.pipeline.list_album_dirs", side_effect=[set(), {Path("/dl/Artist/Album")}])
+    @patch("app.pipeline.run_download", return_value=DownloadResult(success=True))
+    def test_download_passes_no_db_true(self, mock_dl, mock_dirs, mock_picard, mock_move, mock_clean):
+        """Explicit-upgrade must pass no_db=True to run_download so qobuz-dl's
+        local DB never silently skips an album that was previously downloaded
+        as a clean copy."""
+        job_id = db.create_job("explicit_upgrade", "library")
+        db.update_job(job_id, status="confirmed")
+        db.set_job_plan(job_id, json.dumps(self._plan()))
+
+        run_explicit_upgrade_download(job_id, lambda: False)
+
+        mock_dl.assert_called_once()
+        _, kwargs = mock_dl.call_args
+        assert kwargs.get("no_db") is True, (
+            "run_download must be called with no_db=True for explicit_upgrade "
+            "so albums previously recorded in qobuz-dl's database are not skipped"
+        )
+
 
 # ── jobs._process_job() routing ───────────────────────────────────────────────
 
