@@ -26,6 +26,14 @@ from app.qobuz_client import make_client, album_url_from_id
 from app.picard import run_picard
 from app.mover import move_album
 from app.structure import clean_empty_dirs, list_album_dirs, verify_structure, album_already_present
+from app.library import scan_untagged_albums
+from app.lyrics_library import (
+    scan_missing_lyrics,
+    file_needs_lyrics,
+    _read_track_meta,
+    fetch_lrc,
+    write_lrc,
+)
 from app.settings_store import get_token, get_quality, get_prefer_explicit
 
 logger = logging.getLogger(__name__)
@@ -35,7 +43,7 @@ LogCallback = Callable[[str], None]
 # Estimated MB downloaded per minute of audio, by Qobuz quality tier.
 _MB_PER_MIN: dict[int, float] = {27: 50.0, 7: 25.0, 6: 10.0, 5: 2.4}
 
-_BULK_TYPES = {"discography", "expand_albums", "expand_discographies", "explicit_upgrade"}
+_BULK_TYPES = {"discography", "expand_albums", "expand_discographies", "explicit_upgrade", "retag_library"}
 
 
 def _log(job_id: int, msg: str, callback: Optional[LogCallback] = None):
@@ -640,6 +648,238 @@ def run_explicit_upgrade_download(job_id: int, cancel_check: Callable[[], bool])
     re-fetches albums even if they were previously downloaded (e.g. as a clean copy).
     """
     return _run_bulk_download(job_id, "explicit", cancel_check, no_db=True)
+
+
+# ── retag-library pipelines ───────────────────────────────────────────────────
+
+def run_retag_library_resolve(job_id: int, source: str = "library") -> bool:
+    """
+    Resolve phase for retag_library jobs.
+
+    Scans MUSIC_DIR for FLACs that are untagged or were never matched by Picard
+    (see app/library.py), builds a plan of the album directories that need
+    tagging, and sets status awaiting_confirm. No Qobuz token is required —
+    this job never downloads anything.
+
+    Returns True if any album dir needs tagging.
+    """
+    label = "retag"
+    _log(job_id, f"[pipeline/{label}] scanning music library: {config.MUSIC_DIR}")
+    db.update_job(job_id, status="resolving")
+
+    try:
+        scan = scan_untagged_albums(config.MUSIC_DIR)
+    except Exception as exc:
+        _log(job_id, f"[pipeline/{label}] library scan failed: {exc}")
+        db.update_job(job_id, status="error")
+        return False
+
+    plan = {
+        "dirs": scan["dirs"],
+        "scanned_files": scan["scanned_files"],
+        "untagged_files": scan["untagged_files"],
+        "album_count": scan["album_count"],
+    }
+    db.set_job_plan(job_id, json.dumps(plan))
+    db.update_job(job_id, status="awaiting_confirm")
+    _log(
+        job_id,
+        f"[pipeline/{label}] plan ready: {scan['album_count']} album dir(s) need tagging "
+        f"({scan['untagged_files']} of {scan['scanned_files']} file(s) untagged or "
+        f"not matched by Picard)",
+    )
+    if scan["album_count"] == 0:
+        _log(job_id, f"[pipeline/{label}] nothing to do — library already fully tagged")
+    return scan["album_count"] > 0
+
+
+def run_retag_library_execute(job_id: int, cancel_check: Callable[[], bool]) -> bool:
+    """
+    Execute phase for retag_library jobs.
+
+    Runs Picard (with MusicBrainz lookup forced on) once per flagged album dir,
+    tagging files in place. The files are already in MUSIC_DIR in the
+    Artist/Album/Title layout, so they are NOT moved — Picard only enriches the
+    embedded tags. Returns True when every album tagged cleanly.
+    """
+    label = "retag"
+    job = db.get_job(job_id)
+    if not job:
+        return False
+    plan = json.loads(job.get("plan") or "{}")
+    dirs = [Path(p) for p in plan.get("dirs", [])]
+
+    if not dirs:
+        _log(job_id, f"[pipeline/{label}] no album dirs in plan — nothing to tag")
+        db.update_job(job_id, status="done")
+        return True
+
+    _log(job_id, f"[pipeline/{label}] tagging {len(dirs)} album dir(s) with Picard")
+
+    tagged = 0
+    failed = 0
+    for i, album_dir in enumerate(dirs, 1):
+        if cancel_check():
+            _log(job_id, f"[pipeline/{label}] cancelled between albums")
+            db.update_job(job_id, status="cancelled")
+            return False
+        if not album_dir.exists():
+            _log(job_id, f"[pipeline/{label}] ({i}/{len(dirs)}) skip — dir gone: {album_dir}")
+            continue
+
+        _log(job_id, f"[pipeline/{label}] ({i}/{len(dirs)}) tagging: {album_dir.name}")
+        db.update_job(job_id, status="tagging")
+        result = run_picard(
+            source_dir=album_dir,
+            log_callback=lambda l: db.append_job_log(job_id, l),
+            lookup=True,
+        )
+        if result.success:
+            tagged += 1
+        else:
+            failed += 1
+            _log(
+                job_id,
+                f"[pipeline/{label}] Picard failed on {album_dir.name}: "
+                f"{result.error_message}",
+            )
+
+    db.update_job(job_id, status="verifying")
+    stats = verify_structure(config.MUSIC_DIR)
+    _log(
+        job_id,
+        f"[pipeline/{label}] music dir: {stats['flac_count']} FLAC file(s), "
+        f"{len(stats['artists'])} artist(s)",
+    )
+
+    status = "done" if failed == 0 else "done_with_warnings"
+    db.update_job(job_id, status=status)
+    _log(
+        job_id,
+        f"[pipeline/{label}] complete (status={status}, tagged={tagged}, failed={failed})",
+    )
+    return failed == 0
+
+
+# ── fetch-lyrics pipelines ────────────────────────────────────────────────────
+
+def run_fetch_lyrics_resolve(job_id: int, source: str = "library") -> bool:
+    """
+    Resolve phase for fetch_lyrics jobs.
+
+    Scans MUSIC_DIR for FLACs that have no .lrc sidecar, builds a plan of
+    files that need lyrics, and sets status awaiting_confirm.  No Qobuz
+    token is required — this job never downloads audio.
+
+    Returns True if any files are missing lyrics.
+    """
+    label = "fetch_lyrics"
+    _log(job_id, f"[pipeline/{label}] scanning music library: {config.MUSIC_DIR}")
+    db.update_job(job_id, status="resolving")
+
+    try:
+        scan = scan_missing_lyrics(config.MUSIC_DIR)
+    except Exception as exc:
+        _log(job_id, f"[pipeline/{label}] library scan failed: {exc}")
+        db.update_job(job_id, status="error")
+        return False
+
+    plan = {
+        "files": scan["files"],
+        "dirs": scan["dirs"],
+        "scanned_files": scan["scanned_files"],
+        "missing_files": scan["missing_files"],
+        "album_count": scan["album_count"],
+    }
+    db.set_job_plan(job_id, json.dumps(plan))
+    db.update_job(job_id, status="awaiting_confirm")
+    _log(
+        job_id,
+        f"[pipeline/{label}] plan ready: {scan['missing_files']} of {scan['scanned_files']} "
+        f"file(s) missing lyrics across {scan['album_count']} album dir(s)",
+    )
+    if scan["missing_files"] == 0:
+        _log(job_id, f"[pipeline/{label}] nothing to do — all tracks already have lyrics")
+    return scan["missing_files"] > 0
+
+
+def run_fetch_lyrics_execute(job_id: int, cancel_check: Callable[[], bool]) -> bool:
+    """
+    Execute phase for fetch_lyrics jobs.
+
+    For each FLAC in the plan, re-checks that the .lrc is still missing
+    (idempotent), reads the track's tags, queries LRCLIB, and writes the
+    sidecar in place.  Files are never moved.
+
+    Returns True when every file either received lyrics or was skipped as
+    already-present; returns True even when some tracks couldn't be found on
+    LRCLIB (those are counted as warnings → done_with_warnings).
+    """
+    label = "fetch_lyrics"
+    job = db.get_job(job_id)
+    if not job:
+        return False
+    plan = json.loads(job.get("plan") or "{}")
+    files = [Path(p) for p in plan.get("files", [])]
+
+    if not files:
+        _log(job_id, f"[pipeline/{label}] no files in plan — nothing to fetch")
+        db.update_job(job_id, status="done")
+        return True
+
+    _log(job_id, f"[pipeline/{label}] fetching lyrics for {len(files)} file(s)")
+
+    fetched = 0
+    not_found = 0
+    skipped = 0
+    for i, flac_path in enumerate(files, 1):
+        if cancel_check():
+            _log(job_id, f"[pipeline/{label}] cancelled between files")
+            db.update_job(job_id, status="cancelled")
+            return False
+
+        if not flac_path.exists():
+            _log(job_id, f"[pipeline/{label}] ({i}/{len(files)}) skip — file gone: {flac_path.name}")
+            continue
+
+        # Idempotency: another run may have already written this sidecar.
+        if not file_needs_lyrics(flac_path):
+            skipped += 1
+            continue
+
+        meta = _read_track_meta(flac_path)
+        if meta is None:
+            _log(
+                job_id,
+                f"[pipeline/{label}] ({i}/{len(files)}) skip — could not read tags: {flac_path.name}",
+            )
+            continue
+
+        db.update_job(job_id, status="downloading")
+        lrc_text = fetch_lrc(meta)
+        if lrc_text:
+            write_lrc(flac_path, lrc_text)
+            fetched += 1
+            _log(
+                job_id,
+                f"[pipeline/{label}] ({i}/{len(files)}) fetched: {flac_path.name}",
+            )
+        else:
+            not_found += 1
+            _log(
+                job_id,
+                f"[pipeline/{label}] ({i}/{len(files)}) not found on LRCLIB: "
+                f"{meta['artist']} — {meta['title']}",
+            )
+
+    status = "done" if not_found == 0 else "done_with_warnings"
+    db.update_job(job_id, status=status)
+    _log(
+        job_id,
+        f"[pipeline/{label}] complete (status={status}, fetched={fetched}, "
+        f"not_found={not_found}, skipped_present={skipped})",
+    )
+    return True
 
 
 # ── legacy aliases (kept so existing tests that import these names still work) ─

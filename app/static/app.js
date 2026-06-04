@@ -45,6 +45,8 @@ const TYPE_META = {
   expand_albums:          { label: 'playlist → albums',  icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>` },
   expand_discographies:   { label: 'playlist → discos',  icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>` },
   explicit_upgrade:       { label: 'fix clean → explicit', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>` },
+  retag_library:          { label: 'retag library',       icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>` },
+  fetch_lyrics:           { label: 'fetch lyrics',        icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>` },
 };
 
 function typeIcon(type) {
@@ -115,8 +117,19 @@ let selectedMode = 'track';
 const libraryScanField = document.getElementById('library-scan-field');
 const libraryScanToggle = document.getElementById('library-scan-toggle');
 const urlInput = document.getElementById('playlist-url');
+const urlField = urlInput.closest('.field');
 
 function updateExplicitUpgradeUI() {
+  // retag_library / fetch_lyrics never take a URL — they always scan the whole /music library.
+  if (selectedMode === 'retag_library' || selectedMode === 'fetch_lyrics') {
+    libraryScanField.style.display = 'none';
+    urlField.style.display = 'none';
+    urlInput.required = false;
+    urlInput.disabled = true;
+    return;
+  }
+  urlField.style.display = '';
+  urlInput.disabled = false;
   if (selectedMode !== 'explicit_upgrade') {
     libraryScanField.style.display = 'none';
     urlInput.required = true;
@@ -153,6 +166,9 @@ document.getElementById('add-form').addEventListener('submit', async (e) => {
   // For explicit_upgrade with library scan, use the "library" sentinel instead of a URL.
   let url = urlInput.value.trim();
   if (selectedMode === 'explicit_upgrade' && libraryScanToggle.checked) {
+    url = 'library';
+  }
+  if (selectedMode === 'retag_library' || selectedMode === 'fetch_lyrics') {
     url = 'library';
   }
   if (!url) return;
@@ -217,6 +233,14 @@ function formatPlan(planJson) {
   if (!planJson) return '';
   let plan;
   try { plan = JSON.parse(planJson); } catch { return ''; }
+  // fetch_lyrics plan shape (list of files missing .lrc sidecars).
+  if (plan.missing_files !== undefined) {
+    return `${plan.missing_files || 0} of ${plan.scanned_files || 0} file(s) missing lyrics · ${plan.album_count || 0} album dir(s)`;
+  }
+  // retag_library plan shape (no albums — a list of dirs to retag).
+  if (plan.dirs !== undefined) {
+    return `${plan.album_count || 0} album dir(s) to retag · ${plan.untagged_files || 0} of ${plan.scanned_files || 0} file(s) untagged or unmatched`;
+  }
   const albums = plan.albums || [];
   const skipped = plan.skipped_existing || 0;
   const dup = plan.skipped_duplicate || 0;

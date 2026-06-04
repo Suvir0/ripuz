@@ -28,11 +28,15 @@ from app.pipeline import (
     run_expand_discographies_download,
     run_explicit_upgrade_resolve,
     run_explicit_upgrade_download,
+    run_retag_library_resolve,
+    run_retag_library_execute,
+    run_fetch_lyrics_resolve,
+    run_fetch_lyrics_execute,
 )
 
 logger = logging.getLogger(__name__)
 
-_BULK_TYPES = {"discography", "expand_albums", "expand_discographies", "explicit_upgrade"}
+_BULK_TYPES = {"discography", "expand_albums", "expand_discographies", "explicit_upgrade", "retag_library", "fetch_lyrics"}
 
 _worker_thread: threading.Thread | None = None
 _stop_event = threading.Event()
@@ -85,6 +89,10 @@ def _process_job(job: dict):
                     run_expand_discographies_resolve(job_id, url)
                 elif job_type == "explicit_upgrade":
                     run_explicit_upgrade_resolve(job_id, url)
+                elif job_type == "retag_library":
+                    run_retag_library_resolve(job_id, url)
+                elif job_type == "fetch_lyrics":
+                    run_fetch_lyrics_resolve(job_id, url)
             elif status == "confirmed":
                 if job_type == "discography":
                     run_discography_download(job_id, cancel_check)
@@ -94,6 +102,10 @@ def _process_job(job: dict):
                     run_expand_discographies_download(job_id, cancel_check)
                 elif job_type == "explicit_upgrade":
                     run_explicit_upgrade_download(job_id, cancel_check)
+                elif job_type == "retag_library":
+                    run_retag_library_execute(job_id, cancel_check)
+                elif job_type == "fetch_lyrics":
+                    run_fetch_lyrics_execute(job_id, cancel_check)
         elif job_type == "playlist":
             run_playlist_pipeline(job_id, url, cancel_check)
         elif job_type == "track":

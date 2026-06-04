@@ -173,6 +173,7 @@ async def api_create_job(body: dict):
     VALID_TYPES = {
         "playlist", "expand_albums", "track", "album",
         "discography", "expand_discographies", "explicit_upgrade",
+        "retag_library", "fetch_lyrics",
     }
     job_type = body.get("type", "playlist")
     url = body.get("url", "").strip()
@@ -180,13 +181,19 @@ async def api_create_job(body: dict):
         return JSONResponse({"error": "url required"}, status_code=400)
     if job_type not in VALID_TYPES:
         return JSONResponse({"error": "invalid type"}, status_code=400)
+    # retag_library / fetch_lyrics only ever scan the local /music library — no URL.
+    if job_type in ("retag_library", "fetch_lyrics") and url != "library":
+        return JSONResponse(
+            {"error": f"{job_type} only supports the 'library' source"},
+            status_code=400,
+        )
     # explicit_upgrade may use the sentinel "library" (scan local /music dir)
     # or a normal Qobuz playlist URL — both are valid.
     if url != "library" and not is_valid_qobuz_input(url):
         return JSONResponse({"error": "url must be a qobuz.com URL or ID"}, status_code=400)
-    if url == "library" and job_type != "explicit_upgrade":
+    if url == "library" and job_type not in ("explicit_upgrade", "retag_library", "fetch_lyrics"):
         return JSONResponse(
-            {"error": "'library' source is only valid for explicit_upgrade jobs"},
+            {"error": "'library' source is only valid for explicit_upgrade and retag_library jobs"},
             status_code=400,
         )
     job_id = enqueue(job_type, url)
