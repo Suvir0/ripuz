@@ -19,11 +19,13 @@ Downloads your Qobuz library at a **configurable quality** (MP3 320 → FLAC 24-
 | **Expand to albums** | Resolve each track in a playlist to its full album, then download every album |
 | **Expand discographies** | Resolve each artist in a playlist to their full catalog, then download everything |
 | **Explicit upgrade** | Replace clean tracks with their explicit versions — from a playlist or by scanning your entire `/music` library |
+| **Retag library** | Scan your entire `/music` library for FLACs that are untagged or were never matched by MusicBrainz Picard, and (re-)tag them in place with Picard |
 
 **All bulk modes** (Discography, Expand, Explicit upgrade) are **two-phase**: Ripuz first resolves the full album list, shows you a plan with an estimated download size, and waits for your confirmation before downloading anything. You can cancel at any time.
 
 **Additional capabilities:**
 - Per-album Picard tagging (MusicBrainz lookup, headless under Xvfb)
+- Whole-library retag pass: finds files missing core tags or a MusicBrainz id and tags them in place (MusicBrainz lookup is forced on for this pass)
 - Configurable quality tier via the Settings UI
 - Optional synced `.lrc` lyrics download (Plex sidecar format)
 - Optional prefer-explicit toggle for playlist downloads

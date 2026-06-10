@@ -66,10 +66,16 @@ def xvfb_run_executable() -> str:
 def build_picard_command(
     source_dir: Path,
     picard_config: Optional[Path] = None,
+    lookup: Optional[bool] = None,
 ) -> list[str]:
     """
     Build the xvfb-run + picard command for unattended tagging of source_dir.
     --stand-alone-instance prevents any pipe/single-instance negotiation.
+
+    lookup overrides the global PICARD_LOOKUP default for this one command:
+    None = use the PICARD_LOOKUP env default, True/False = force on/off. The
+    library-retag pipeline forces it on because MusicBrainz enrichment is the
+    whole point of that job.
     """
     picard_bin = picard_executable()
     xvfb = xvfb_run_executable()
@@ -86,7 +92,8 @@ def build_picard_command(
         "-e", f"LOAD {source_dir}",
         "-e", "CLUSTER",
     ]
-    if PICARD_LOOKUP:
+    do_lookup = PICARD_LOOKUP if lookup is None else lookup
+    if do_lookup:
         picard_args += ["-e", "LOOKUP clustered"]
     picard_args += [
         "-e", "SAVE",
@@ -101,17 +108,20 @@ def run_picard(
     picard_config: Optional[Path] = None,
     log_callback: Optional[LogCallback] = None,
     timeout: int = PICARD_TIMEOUT_SECONDS,
+    lookup: Optional[bool] = None,
 ) -> PicardResult:
     """
     Run Picard headlessly on source_dir. Returns PicardResult.
     Picard tags files in place; moving to MUSIC_DIR is handled by app/mover.py.
+
+    lookup overrides the global PICARD_LOOKUP default (see build_picard_command).
     """
     if not source_dir.exists():
         msg = f"source directory does not exist: {source_dir}"
         logger.error(msg)
         return PicardResult(success=False, error_message=msg)
 
-    cmd = build_picard_command(source_dir, picard_config)
+    cmd = build_picard_command(source_dir, picard_config, lookup=lookup)
     logger.info("Running Picard: %s", " ".join(cmd))
 
     lines: list[str] = []
