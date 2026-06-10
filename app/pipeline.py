@@ -34,6 +34,14 @@ from app.lyrics_library import (
     fetch_lrc,
     write_lrc,
 )
+from app.art_library import (
+    scan_missing_art,
+    album_needs_art,
+    _read_album_mbid,
+    extract_embedded_art,
+    fetch_caa_art,
+    write_cover,
+)
 from app.settings_store import get_token, get_quality, get_prefer_explicit
 
 logger = logging.getLogger(__name__)
@@ -878,6 +886,128 @@ def run_fetch_lyrics_execute(job_id: int, cancel_check: Callable[[], bool]) -> b
         job_id,
         f"[pipeline/{label}] complete (status={status}, fetched={fetched}, "
         f"not_found={not_found}, skipped_present={skipped})",
+    )
+    return True
+
+
+def run_fetch_art_resolve(job_id: int, source: str = "library") -> bool:
+    """
+    Resolve phase for fetch_art jobs.
+
+    Scans MUSIC_DIR for album directories with no cover art sidecar, builds a
+    plan of dirs that need art, and sets status awaiting_confirm.
+
+    Returns True if any albums are missing art.
+    """
+    label = "fetch_art"
+    _log(job_id, f"[pipeline/{label}] scanning music library: {config.MUSIC_DIR}")
+    db.update_job(job_id, status="resolving")
+
+    try:
+        scan = scan_missing_art(config.MUSIC_DIR)
+    except Exception as exc:
+        _log(job_id, f"[pipeline/{label}] library scan failed: {exc}")
+        db.update_job(job_id, status="error")
+        return False
+
+    plan = {
+        "dirs": scan["dirs"],
+        "scanned_albums": scan["scanned_albums"],
+        "missing_albums": scan["missing_albums"],
+    }
+    db.set_job_plan(job_id, json.dumps(plan))
+    db.update_job(job_id, status="awaiting_confirm")
+    _log(
+        job_id,
+        f"[pipeline/{label}] plan ready: {scan['missing_albums']} of {scan['scanned_albums']} "
+        f"album dir(s) missing cover art",
+    )
+    if scan["missing_albums"] == 0:
+        _log(job_id, f"[pipeline/{label}] nothing to do — all albums already have cover art")
+    return scan["missing_albums"] > 0
+
+
+def run_fetch_art_execute(job_id: int, cancel_check: Callable[[], bool]) -> bool:
+    """
+    Execute phase for fetch_art jobs.
+
+    For each album dir in the plan, re-checks that art is still missing
+    (idempotent), then tries:
+      1. Extract embedded FLAC picture (offline, no network).
+      2. Fetch from Cover Art Archive via musicbrainz_albumid tag.
+
+    Returns True when every album either received art or was skipped as
+    already-present.  Albums with no embedded art AND no MBID are counted as
+    not_found → done_with_warnings.
+    """
+    label = "fetch_art"
+    job = db.get_job(job_id)
+    if not job:
+        return False
+    plan = json.loads(job.get("plan") or "{}")
+    dirs = [Path(d) for d in plan.get("dirs", [])]
+
+    if not dirs:
+        _log(job_id, f"[pipeline/{label}] no albums in plan — nothing to fetch")
+        db.update_job(job_id, status="done")
+        return True
+
+    _log(job_id, f"[pipeline/{label}] fetching cover art for {len(dirs)} album dir(s)")
+
+    extracted = 0
+    fetched = 0
+    not_found = 0
+    skipped = 0
+
+    for i, album_dir in enumerate(dirs, 1):
+        if cancel_check():
+            _log(job_id, f"[pipeline/{label}] cancelled between albums")
+            db.update_job(job_id, status="cancelled")
+            return False
+
+        if not album_dir.exists():
+            _log(job_id, f"[pipeline/{label}] ({i}/{len(dirs)}) skip — dir gone: {album_dir.name}")
+            continue
+
+        # Idempotency: another run may have already written cover art.
+        if not album_needs_art(album_dir):
+            skipped += 1
+            continue
+
+        # Try 1: embedded FLAC picture (no network required).
+        art = extract_embedded_art(album_dir)
+        if art:
+            data, mime = art
+            write_cover(album_dir, data, mime)
+            extracted += 1
+            _log(job_id, f"[pipeline/{label}] ({i}/{len(dirs)}) extracted from FLAC: {album_dir.name}")
+            continue
+
+        # Try 2: Cover Art Archive via MusicBrainz album ID.
+        mbid = _read_album_mbid(album_dir)
+        if mbid:
+            db.update_job(job_id, status="downloading")
+            art = fetch_caa_art(mbid)
+            if art:
+                data, mime = art
+                write_cover(album_dir, data, mime)
+                fetched += 1
+                _log(job_id, f"[pipeline/{label}] ({i}/{len(dirs)}) fetched from CAA: {album_dir.name}")
+                continue
+
+        not_found += 1
+        reason = "no embedded art and no MusicBrainz album ID" if not mbid else "not found on Cover Art Archive"
+        _log(
+            job_id,
+            f"[pipeline/{label}] ({i}/{len(dirs)}) not found — {reason}: {album_dir.name}",
+        )
+
+    status = "done" if not_found == 0 else "done_with_warnings"
+    db.update_job(job_id, status=status)
+    _log(
+        job_id,
+        f"[pipeline/{label}] complete (status={status}, extracted={extracted}, "
+        f"fetched={fetched}, not_found={not_found}, skipped_present={skipped})",
     )
     return True
 

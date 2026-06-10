@@ -139,7 +139,7 @@ def test_db_file_permissions(tmp_dirs):
 
 @pytest.fixture()
 def auth_client(tmp_dirs, monkeypatch):
-    """Client with auth enabled; resets failure state between tests."""
+    """Client with auth enabled; resets failure state before and after tests."""
     monkeypatch.setenv("RIPUZ_AUTH_PASS", "secret")
     # Reload config first so _AUTH_PASS picks up the new env var
     importlib.reload(cfg)
@@ -151,6 +151,12 @@ def auth_client(tmp_dirs, monkeypatch):
     with patch("app.jobs.start_worker"), patch("app.jobs.stop_worker"):
         with TestClient(main_mod.app, raise_server_exceptions=True) as c:
             yield c, main_mod
+    # Teardown: reload modules back to default (no auth password) so other tests
+    # don't inherit the "secret" password or the brute-force lockout state.
+    main_mod._auth_failures.clear()
+    monkeypatch.delenv("RIPUZ_AUTH_PASS", raising=False)
+    importlib.reload(cfg)
+    importlib.reload(main_mod)
 
 
 def test_auth_correct_credentials(auth_client):

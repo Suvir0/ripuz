@@ -168,4 +168,43 @@ def move_album(album_dir: Path, music_dir: Path) -> MoveResult:
                     result.errors.append(msg)
                 break
 
+    # Carry cover art sidecars from the source album dir into every destination
+    # album dir that was written during this move (there may be more than one for
+    # multi-disc sets that fan out to separate Artist/Album dirs).
+    # qobuz-dl saves cover.jpg in the download dir root; we copy rather than move
+    # so the file is available in every destination.
+    from app.art_library import _ART_NAMES  # local import to avoid circular at module load
+
+    dest_dirs: set[Path] = {d.parent for d in result.moved}
+
+    # Locate art: check the immediate album_dir and its parent (for nested CD1/CD2 layouts
+    # where qobuz-dl saves cover.jpg one level up).
+    art_src: Path | None = None
+    for candidate_dir in (album_dir, album_dir.parent):
+        for name in _ART_NAMES:
+            candidate = candidate_dir / name
+            if candidate.exists():
+                art_src = candidate
+                break
+        if art_src:
+            break
+
+    if art_src:
+        for dest_dir in dest_dirs:
+            # Do not overwrite existing art in the destination.
+            if not any((dest_dir / n).exists() for n in _ART_NAMES):
+                art_dest = dest_dir / art_src.name
+                try:
+                    shutil.copy2(str(art_src), str(art_dest))
+                    logger.debug("move_album: cover art %s → %s", art_src, art_dest)
+                except Exception as exc:
+                    msg = f"failed to copy cover art {art_src} → {art_dest}: {exc}"
+                    logger.warning(msg)
+                    result.errors.append(msg)
+        # Remove the source art once it has been distributed to all dest dirs.
+        try:
+            art_src.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     return result

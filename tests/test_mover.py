@@ -387,3 +387,81 @@ def test_move_album_no_collision_unchanged_layout(tmp_path):
     names = {p.name for p in result.moved}
     assert "Opening.FLAC" in names
     assert "Closing.FLAC" in names
+
+
+# ── cover art carry ───────────────────────────────────────────────────────────
+
+def test_move_album_carries_cover_art(tmp_path):
+    """cover.jpg from the source album dir is copied into the destination album dir."""
+    from app.mover import move_album
+    dl = tmp_path / "dl" / "Artist" / "Album"
+    music = tmp_path / "music"
+    dl.mkdir(parents=True, exist_ok=True)
+    music.mkdir(exist_ok=True)
+
+    _make_tagged_flac(dl / "track.flac", title="Track")
+    (dl / "cover.jpg").write_bytes(b"jpegdata")
+
+    result = move_album(dl, music)
+
+    assert len(result.moved) == 1
+    dest_dir = result.moved[0].parent
+    assert (dest_dir / "cover.jpg").exists()
+    assert (dest_dir / "cover.jpg").read_bytes() == b"jpegdata"
+
+
+def test_move_album_cover_in_parent_dir_for_disc_layouts(tmp_path):
+    """cover.jpg one level above the track dir (CD1/) is found and carried."""
+    from app.mover import move_album
+    album_root = tmp_path / "dl" / "Artist" / "Album"
+    cd1 = album_root / "CD1"
+    music = tmp_path / "music"
+    cd1.mkdir(parents=True, exist_ok=True)
+    music.mkdir(exist_ok=True)
+
+    _make_tagged_flac(cd1 / "track.flac", title="Track")
+    (album_root / "cover.jpg").write_bytes(b"parentjpeg")  # art in album root, not CD1/
+
+    result = move_album(cd1, music)
+
+    assert len(result.moved) == 1
+    dest_dir = result.moved[0].parent
+    assert (dest_dir / "cover.jpg").read_bytes() == b"parentjpeg"
+
+
+def test_move_album_does_not_overwrite_existing_cover(tmp_path):
+    """Existing cover.jpg in the destination is not replaced."""
+    from app.mover import move_album
+    dl = tmp_path / "dl" / "Artist" / "Album"
+    music = tmp_path / "music"
+    dl.mkdir(parents=True, exist_ok=True)
+    music.mkdir(exist_ok=True)
+
+    _make_tagged_flac(dl / "track.flac", title="Track")
+    (dl / "cover.jpg").write_bytes(b"new_art")
+
+    # Pre-create the destination dir with existing cover
+    dest_dir = music / "Test_Artist" / "Test_Album"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    (dest_dir / "cover.jpg").write_bytes(b"existing_art")
+
+    move_album(dl, music)
+
+    assert (dest_dir / "cover.jpg").read_bytes() == b"existing_art"
+
+
+def test_move_album_source_art_removed_after_carry(tmp_path):
+    """Source cover.jpg is removed once it has been copied to all destinations."""
+    from app.mover import move_album
+    dl = tmp_path / "dl" / "Artist" / "Album"
+    music = tmp_path / "music"
+    dl.mkdir(parents=True, exist_ok=True)
+    music.mkdir(exist_ok=True)
+
+    _make_tagged_flac(dl / "track.flac", title="Track")
+    art = dl / "cover.jpg"
+    art.write_bytes(b"art")
+
+    move_album(dl, music)
+
+    assert not art.exists()
