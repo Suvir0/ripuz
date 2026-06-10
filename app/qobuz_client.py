@@ -275,6 +275,67 @@ class QobuzClient:
             logger.warning("search_albums failed (%s)", exc)
             return {}
 
+    def search(self, query: str, media_type: str = "album", limit: int = 15) -> list[dict]:
+        """Unified search returning a normalized list of results.
+
+        media_type: "album" | "track" | "artist"
+        """
+        if media_type == "track":
+            raw = self.search_tracks(query, limit=limit)
+            items = raw.get("tracks", {}).get("items", [])
+            results = []
+            for t in items:
+                album_obj = t.get("album") or {}
+                artist_obj = t.get("performer") or t.get("artist") or {}
+                results.append({
+                    "type": "track",
+                    "id": str(t.get("id", "")),
+                    "url": f"https://play.qobuz.com/track/{t.get('id', '')}",
+                    "title": t.get("title", ""),
+                    "artist": artist_obj.get("name", "") if isinstance(artist_obj, dict) else "",
+                    "album": album_obj.get("title", "") if isinstance(album_obj, dict) else "",
+                    "year": str(t.get("release_date_original", ""))[:4],
+                    "explicit": bool(t.get("parental_warning")),
+                    "cover_url": (album_obj.get("image") or {}).get("small", "") if isinstance(album_obj, dict) else "",
+                })
+            return results
+        elif media_type == "artist":
+            self._ensure_client()
+            try:
+                raw = self._client.search_artists(query, limit=limit) or {}
+            except Exception:
+                raw = {}
+            items = raw.get("artists", {}).get("items", [])
+            return [
+                {
+                    "type": "artist",
+                    "id": str(a.get("id", "")),
+                    "url": f"https://play.qobuz.com/artist/{a.get('id', '')}",
+                    "title": a.get("name", ""),
+                    "artist": a.get("name", ""),
+                    "cover_url": (a.get("image") or {}).get("small", "") if isinstance(a.get("image"), dict) else "",
+                }
+                for a in items
+            ]
+        else:
+            raw = self.search_albums(query, limit=limit)
+            items = raw.get("albums", {}).get("items", [])
+            results = []
+            for a in items:
+                artist_obj = a.get("artist") or {}
+                results.append({
+                    "type": "album",
+                    "id": str(a.get("id", "")),
+                    "url": album_url_from_id(str(a.get("id", ""))),
+                    "title": a.get("title", ""),
+                    "artist": artist_obj.get("name", "") if isinstance(artist_obj, dict) else "",
+                    "year": str(a.get("release_date_original", ""))[:4],
+                    "track_count": a.get("tracks_count", 0),
+                    "explicit": bool(a.get("parental_warning")),
+                    "cover_url": (a.get("image") or {}).get("small", "") if isinstance(a.get("image"), dict) else "",
+                })
+            return results
+
     # ── explicit-upgrade plan builders ────────────────────────────────────────
 
     def playlist_to_explicit_album_plan(

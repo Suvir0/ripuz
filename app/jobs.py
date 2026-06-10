@@ -128,6 +128,13 @@ def _process_job(job: dict):
     finally:
         with _cancelled_lock:
             _cancelled.discard(job_id)
+        finished = db.get_job(job_id)
+        if finished and finished.get("status") in db._TERMINAL_STATUSES:
+            try:
+                from app.notify import notify_job_finished
+                notify_job_finished(finished)
+            except Exception:
+                pass
 
 
 def _worker_loop(stop_event: threading.Event, poll_interval: float = 2.0):

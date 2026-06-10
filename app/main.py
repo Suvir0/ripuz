@@ -280,6 +280,153 @@ async def api_create_job(body: dict):
     return {"job_id": job_id}
 
 
+@app.get("/api/library")
+def api_library(refresh: int = 0):
+    from app.library_stats import get_library
+    return get_library(refresh=bool(refresh))
+
+
+@app.get("/api/library/cover/{album_id:path}")
+def api_library_cover(album_id: str):
+    from fastapi.responses import FileResponse
+    from app.art_library import find_cover
+    if not album_id or "\x00" in album_id:
+        return JSONResponse({"error": "invalid album id"}, status_code=404)
+    music_root = config.MUSIC_DIR.resolve()
+    try:
+        target = (config.MUSIC_DIR / album_id).resolve()
+        target.relative_to(music_root)
+    except (ValueError, Exception):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not target.is_dir():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    cover = find_cover(target)
+    if not cover:
+        return JSONResponse({"error": "no cover art"}, status_code=404)
+    return FileResponse(cover, headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/api/library/album/{album_id:path}")
+def api_library_album(album_id: str):
+    if not album_id or "\x00" in album_id:
+        return JSONResponse({"error": "invalid album id"}, status_code=404)
+    music_root = config.MUSIC_DIR.resolve()
+    try:
+        target = (config.MUSIC_DIR / album_id).resolve()
+        target.relative_to(music_root)
+    except (ValueError, Exception):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not target.is_dir():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    from app.structure import find_flac_files
+    from app.art_library import find_cover
+    tracks = []
+    try:
+        from mutagen.flac import FLAC
+        for flac_path in sorted(find_flac_files(target)):
+            try:
+                audio = FLAC(flac_path)
+                def _tag(key, default=""):
+                    vals = audio.get(key)
+                    return str(vals[0]).strip() if vals else default
+                try:
+                    dur = round(audio.info.length)
+                except Exception:
+                    dur = 0
+                tracks.append({
+                    "title": _tag("title", flac_path.stem),
+                    "tracknumber": _tag("tracknumber"),
+                    "discnumber": _tag("discnumber"),
+                    "duration": dur,
+                    "bit_depth": getattr(audio.info, "bits_per_sample", 0),
+                    "sample_rate": getattr(audio.info, "sample_rate", 0),
+                    "has_lyrics": flac_path.with_suffix(".lrc").exists(),
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    has_cover = find_cover(target) is not None
+    mbid = None
+    if tracks:
+        from app.art_library import _read_album_mbid
+        mbid = _read_album_mbid(target)
+    parts = album_id.split("/", 1)
+    return {
+        "id": album_id,
+        "artist": parts[0] if len(parts) > 0 else "",
+        "album": parts[1] if len(parts) > 1 else "",
+        "has_cover": has_cover,
+        "mbid_present": bool(mbid),
+        "track_count": len(tracks),
+        "total_duration": sum(t["duration"] for t in tracks),
+        "size_bytes": sum(
+            (target / t["title"]).stat().st_size if (target / t["title"]).exists() else 0
+            for t in tracks
+        ),
+        "tracks": tracks,
+    }
+
+
+@app.get("/api/jobs/{job_id}/stream")
+async def api_job_stream(job_id: int):
+    """SSE stream: emits 'log' and 'status' events while the job is active."""
+    import asyncio
+    from fastapi.responses import StreamingResponse
+
+    TERMINAL = {"done", "done_with_warnings", "error", "cancelled"}
+
+    async def generate():
+        last_log_len = 0
+        last_status = None
+        heartbeat_count = 0
+        job = db.get_job(job_id)
+        if not job:
+            yield "event: error\ndata: not found\n\n"
+            return
+        while True:
+            job = db.get_job(job_id)
+            if not job:
+                break
+            log = job.get("log") or ""
+            if len(log) > last_log_len:
+                yield "event: log\ndata: append\n\n"
+                last_log_len = len(log)
+            if job["status"] != last_status:
+                last_status = job["status"]
+                import json as _json
+                yield f"event: status\ndata: {_json.dumps({'status': last_status})}\n\n"
+            if last_status in TERMINAL:
+                break
+            heartbeat_count += 1
+            if heartbeat_count % 15 == 0:
+                yield ": heartbeat\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
+
+
+@app.get("/api/search")
+async def api_search(q: str = "", type: str = "album", limit: int = 15):
+    if not q.strip():
+        return JSONResponse({"error": "q required"}, status_code=400)
+    from app.settings_store import get_token
+    from app.qobuz_client import make_client
+    token = get_token()
+    if not token:
+        return JSONResponse({"error": "Qobuz token not configured"}, status_code=503)
+    try:
+        client = make_client(token)
+        results = client.search(q.strip(), media_type=type, limit=min(limit, 50))
+        return {"results": results}
+    except Exception as exc:
+        logger.warning("Search failed: %s", exc)
+        return JSONResponse({"error": f"search failed: {exc}"}, status_code=502)
+
+
 _INDEX_TEMPLATE = (_STATIC_DIR / "index.html").read_text(encoding="utf-8") if _STATIC_DIR.exists() else ""
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
