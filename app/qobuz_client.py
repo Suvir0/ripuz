@@ -205,10 +205,13 @@ class QobuzClient:
 
         junk_re: Optional[re.Pattern] = None
         if config.EXPAND_JUNK_PATTERNS:
-            try:
-                junk_re = re.compile(config.EXPAND_JUNK_PATTERNS, re.IGNORECASE)
-            except re.error as exc:
-                logger.warning("EXPAND_JUNK_PATTERNS invalid regex (%s); skipping filter", exc)
+            if len(config.EXPAND_JUNK_PATTERNS) > 2048:
+                logger.warning("EXPAND_JUNK_PATTERNS exceeds 2048 chars; skipping filter to avoid ReDoS")
+            else:
+                try:
+                    junk_re = re.compile(config.EXPAND_JUNK_PATTERNS, re.IGNORECASE)
+                except re.error as exc:
+                    logger.warning("EXPAND_JUNK_PATTERNS invalid regex (%s); skipping filter", exc)
 
         seen_albums: set[str] = set()
         albums: list[dict] = []

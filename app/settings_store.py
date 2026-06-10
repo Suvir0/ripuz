@@ -3,7 +3,9 @@ Persists application settings to the DB and renders the qobuz-dl config.ini
 that qobuz-dl-ultimate reads at startup.
 """
 import configparser
+import os
 from pathlib import Path
+from typing import Optional
 
 from app import db, config
 
@@ -13,9 +15,33 @@ _MUSIC_DIR_KEY = "music_dir"
 _QUALITY_KEY = "music_quality"
 _DOWNLOAD_LYRICS_KEY = "download_lyrics"
 _PREFER_EXPLICIT_KEY = "prefer_explicit"
+_NOTIFY_WEBHOOK_URL_KEY = "notify_webhook_url"
 
 # All valid Qobuz quality levels accepted by qobuz-dl -q
 VALID_QUALITIES = (5, 6, 7, 27)
+
+
+def validate_dir_setting(value: str, allowed_root: Path) -> Optional[str]:
+    """Return an error message string, or None if the path is acceptable.
+
+    Rules: must be absolute; after resolve() must be at or inside allowed_root
+    (kills ../ and symlink escapes and prevents setting arbitrary system paths);
+    if the path already exists it must be a directory.
+    """
+    p = Path(value)
+    if not p.is_absolute():
+        return f"path must be absolute: {value!r}"
+    try:
+        resolved = p.resolve()
+        root_resolved = allowed_root.resolve()
+        resolved.relative_to(root_resolved)
+    except ValueError:
+        return f"path must be at or inside {allowed_root}: {value!r}"
+    except Exception as exc:
+        return f"invalid path: {exc}"
+    if resolved.exists() and not resolved.is_dir():
+        return f"path exists but is not a directory: {value!r}"
+    return None
 
 
 def get_quality() -> int:
@@ -42,7 +68,8 @@ def save_settings(token: str, downloads_dir: str | None = None,
                   music_dir: str | None = None,
                   quality: int | None = None,
                   download_lyrics: bool | None = None,
-                  prefer_explicit: bool | None = None) -> None:
+                  prefer_explicit: bool | None = None,
+                  notify_webhook_url: str | None = None) -> None:
     db.set_setting(_QOBUZ_TOKEN_KEY, token)
     if downloads_dir:
         db.set_setting(_DOWNLOADS_DIR_KEY, downloads_dir)
@@ -54,7 +81,13 @@ def save_settings(token: str, downloads_dir: str | None = None,
         db.set_setting(_DOWNLOAD_LYRICS_KEY, "true" if download_lyrics else "false")
     if prefer_explicit is not None:
         db.set_setting(_PREFER_EXPLICIT_KEY, "true" if prefer_explicit else "false")
+    if notify_webhook_url is not None:
+        db.set_setting(_NOTIFY_WEBHOOK_URL_KEY, notify_webhook_url)
     _write_qobuz_dl_config()
+
+
+def get_notify_webhook_url() -> str:
+    return db.get_setting(_NOTIFY_WEBHOOK_URL_KEY, "")
 
 
 def get_settings() -> dict:
@@ -65,6 +98,7 @@ def get_settings() -> dict:
         "music_quality": get_quality(),
         "download_lyrics": get_download_lyrics(),
         "prefer_explicit": get_prefer_explicit(),
+        "notify_webhook_url": get_notify_webhook_url(),
     }
 
 
@@ -150,6 +184,10 @@ def _write_qobuz_dl_config() -> None:
     config.QOBUZ_DL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(config.QOBUZ_DL_CONFIG_FILE, "w") as f:
         cfg.write(f)
+    try:
+        os.chmod(config.QOBUZ_DL_CONFIG_FILE, 0o600)
+    except OSError:
+        pass
 
 
 def qobuz_dl_config_path() -> Path:

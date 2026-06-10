@@ -74,15 +74,21 @@ def test_save_settings_placeholder_does_not_overwrite(client):
     assert get_token() == "real_token"
 
 
-def test_save_settings_updates_paths(client):
-    client.post("/api/settings", json={
+def test_save_settings_updates_paths(client, tmp_dirs):
+    # Paths must be within the configured roots (enforced by validation).
+    dl_sub = cfg.DOWNLOADS_DIR / "sub"
+    dl_sub.mkdir()
+    mu_sub = cfg.MUSIC_DIR / "sub"
+    mu_sub.mkdir()
+    r = client.post("/api/settings", json={
         "qobuz_token": "t",
-        "downloads_dir": "/my/downloads",
-        "music_dir": "/my/music",
+        "downloads_dir": str(dl_sub),
+        "music_dir": str(mu_sub),
     })
-    r = client.get("/api/settings")
-    assert r.json()["downloads_dir"] == "/my/downloads"
-    assert r.json()["music_dir"] == "/my/music"
+    assert r.status_code == 200
+    r2 = client.get("/api/settings")
+    assert r2.json()["downloads_dir"] == str(dl_sub)
+    assert r2.json()["music_dir"] == str(mu_sub)
 
 
 # ── jobs ───────────────────────────────────────────────────────────────────────

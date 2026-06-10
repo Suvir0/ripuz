@@ -5,8 +5,10 @@ import base64
 import binascii
 import logging
 import secrets as _secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -26,12 +28,65 @@ _STATIC_DIR = Path(__file__).parent / "static"
 _AUTH_USER = config.RIPUZ_AUTH_USER
 _AUTH_PASS = config.RIPUZ_AUTH_PASS
 
+# Brute-force backoff state (only active when auth is enabled).
+# Maps client IP → (fail_count, locked_until_epoch).
+_auth_failures: dict[str, tuple[int, float]] = {}
+
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "  # unsafe-inline required by existing onclick= rendering
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src https://fonts.gstatic.com; "
+    "img-src 'self' data: https://static.qobuz.com; "
+    "connect-src 'self'"
+)
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Content-Security-Policy": _CSP,
+}
+
+
+class _SecurityMiddleware(BaseHTTPMiddleware):
+    """CSRF protection (Origin/Sec-Fetch-Site check) + security response headers."""
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ("POST", "DELETE", "PUT", "PATCH") and request.url.path.startswith("/api/"):
+            origin = request.headers.get("Origin")
+            sec_fetch_site = request.headers.get("Sec-Fetch-Site")
+            if origin:
+                origin_host = urlparse(origin).netloc  # host:port
+                host = request.headers.get("Host", "")
+                if origin_host != host:
+                    return JSONResponse(
+                        {"error": "cross-origin request rejected"},
+                        status_code=403,
+                    )
+            elif sec_fetch_site and sec_fetch_site not in ("same-origin", "none"):
+                return JSONResponse(
+                    {"error": "cross-origin request rejected"},
+                    status_code=403,
+                )
+        response = await call_next(request)
+        for header, value in _SECURITY_HEADERS.items():
+            response.headers[header] = value
+        return response
+
+
 class _BasicAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if not _AUTH_PASS:
             return await call_next(request)
         if request.url.path in ("/healthz",):
             return await call_next(request)
+
+        client_ip = (request.client.host if request.client else "") or ""
+        now = time.monotonic()
+        fail_count, locked_until = _auth_failures.get(client_ip, (0, 0.0))
+        if now < locked_until:
+            return Response("Too Many Requests", status_code=429)
+
         auth = request.headers.get("Authorization", "")
         authed = False
         if auth.startswith("Basic "):
@@ -48,11 +103,16 @@ class _BasicAuthMiddleware(BaseHTTPMiddleware):
                     and _secrets.compare_digest(password, _AUTH_PASS)
                 )
         if not authed:
+            new_fails = fail_count + 1
+            backoff = min(2 ** max(new_fails - 5, 0), 300) if new_fails >= 5 else 0
+            _auth_failures[client_ip] = (new_fails, now + backoff)
             return Response(
                 "Unauthorized",
                 status_code=401,
                 headers={"WWW-Authenticate": 'Basic realm="Ripuz"'},
             )
+        if fail_count:
+            _auth_failures.pop(client_ip, None)
         return await call_next(request)
 
 
@@ -62,6 +122,12 @@ async def lifespan(app: FastAPI):
     db.init_db(config.DB_FILE)
     from app.jobs import start_worker, stop_worker
     start_worker()
+    if not config.RIPUZ_AUTH_PASS:
+        logger.warning("=" * 64)
+        logger.warning("RIPUZ_AUTH_PASS is not set — the web UI and API are UNAUTHENTICATED.")
+        logger.warning("Anyone who can reach port %s can download music and change settings.", config.APP_PORT)
+        logger.warning("Set RIPUZ_AUTH_PASS to enable HTTP Basic Auth.")
+        logger.warning("=" * 64)
     logger.info("Ripuz started. DB: %s", config.DB_FILE)
     yield
     stop_worker()
@@ -69,6 +135,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Ripuz", lifespan=lifespan)
 app.add_middleware(_BasicAuthMiddleware)
+app.add_middleware(_SecurityMiddleware)
 
 
 @app.get("/healthz")
@@ -86,7 +153,7 @@ async def api_get_settings():
 
 @app.post("/api/settings")
 async def api_save_settings(body: dict):
-    from app.settings_store import save_settings, get_token, VALID_QUALITIES
+    from app.settings_store import save_settings, get_token, VALID_QUALITIES, validate_dir_setting
     token = body.get("qobuz_token", "").strip()
     downloads = body.get("downloads_dir", "").strip() or None
     music = body.get("music_dir", "").strip() or None
@@ -100,13 +167,24 @@ async def api_save_settings(body: dict):
             return JSONResponse({"error": "invalid quality"}, status_code=400)
         if quality not in VALID_QUALITIES:
             return JSONResponse({"error": "invalid quality"}, status_code=400)
+    if downloads:
+        err = validate_dir_setting(downloads, config.DOWNLOADS_DIR)
+        if err:
+            return JSONResponse({"error": err}, status_code=400)
+    if music:
+        err = validate_dir_setting(music, config.MUSIC_DIR)
+        if err:
+            return JSONResponse({"error": err}, status_code=400)
     download_lyrics: bool | None = None
     if "download_lyrics" in body:
         download_lyrics = bool(body["download_lyrics"])
     prefer_explicit: bool | None = None
     if "prefer_explicit" in body:
         prefer_explicit = bool(body["prefer_explicit"])
-    save_settings(token, downloads, music, quality, download_lyrics, prefer_explicit)
+    notify_webhook_url: str | None = None
+    if "notify_webhook_url" in body:
+        notify_webhook_url = body.get("notify_webhook_url", "").strip() or None
+    save_settings(token, downloads, music, quality, download_lyrics, prefer_explicit, notify_webhook_url)
     return {"ok": True}
 
 
@@ -173,16 +251,18 @@ async def api_create_job(body: dict):
     VALID_TYPES = {
         "playlist", "expand_albums", "track", "album",
         "discography", "expand_discographies", "explicit_upgrade",
-        "retag_library", "fetch_lyrics",
+        "retag_library", "fetch_lyrics", "fetch_art",
     }
+    _LIBRARY_ONLY_TYPES = {"retag_library", "fetch_lyrics", "fetch_art"}
+    _LIBRARY_ALLOWED_TYPES = {"explicit_upgrade", "retag_library", "fetch_lyrics", "fetch_art"}
     job_type = body.get("type", "playlist")
     url = body.get("url", "").strip()
     if not url:
         return JSONResponse({"error": "url required"}, status_code=400)
     if job_type not in VALID_TYPES:
         return JSONResponse({"error": "invalid type"}, status_code=400)
-    # retag_library / fetch_lyrics only ever scan the local /music library — no URL.
-    if job_type in ("retag_library", "fetch_lyrics") and url != "library":
+    # retag_library / fetch_lyrics / fetch_art only ever scan the local /music library — no URL.
+    if job_type in _LIBRARY_ONLY_TYPES and url != "library":
         return JSONResponse(
             {"error": f"{job_type} only supports the 'library' source"},
             status_code=400,
@@ -191,9 +271,9 @@ async def api_create_job(body: dict):
     # or a normal Qobuz playlist URL — both are valid.
     if url != "library" and not is_valid_qobuz_input(url):
         return JSONResponse({"error": "url must be a qobuz.com URL or ID"}, status_code=400)
-    if url == "library" and job_type not in ("explicit_upgrade", "retag_library", "fetch_lyrics"):
+    if url == "library" and job_type not in _LIBRARY_ALLOWED_TYPES:
         return JSONResponse(
-            {"error": "'library' source is only valid for explicit_upgrade and retag_library jobs"},
+            {"error": "'library' source is only valid for explicit_upgrade, retag_library, fetch_lyrics, and fetch_art jobs"},
             status_code=400,
         )
     job_id = enqueue(job_type, url)

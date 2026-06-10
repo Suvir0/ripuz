@@ -2,6 +2,7 @@
 SQLite schema and helpers.
 Three tables: jobs, settings, album_cache.
 """
+import os
 import sqlite3
 import json
 from contextlib import contextmanager
@@ -41,6 +42,10 @@ def init_db(db_path: Path) -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
         if "plan" not in cols:
             conn.execute("ALTER TABLE jobs ADD COLUMN plan TEXT NOT NULL DEFAULT ''")
+    try:
+        os.chmod(db_path, 0o600)
+    except OSError:
+        pass
 
 
 @contextmanager
