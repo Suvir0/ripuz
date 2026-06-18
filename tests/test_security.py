@@ -5,6 +5,7 @@ settings path validation, and auth brute-force backoff.
 import importlib
 import os
 import stat
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -178,3 +179,21 @@ def test_auth_brute_force_lockout(auth_client):
         c.get("/api/jobs", auth=("ripuz", "wrong"))
     r = c.get("/api/jobs", auth=("ripuz", "wrong"))
     assert r.status_code == 429
+
+
+# ── escHtml single-quote escape (XSS hardening) ────────────────────────────────
+
+def test_eschtml_source_escapes_single_quote():
+    """escHtml must escape single quotes because it's used inside
+    onclick="fn('${escHtml(value)}')" attribute strings where ' is the
+    JS string delimiter. Without this, attacker-controlled directory
+    names in /music can break out of the JS string and execute code."""
+    import re
+    src = (Path(__file__).resolve().parent.parent / "app" / "static" / "app.js").read_text()
+    m = re.search(r"function\s+escHtml\s*\(.*?\{.*?\n\s*\}", src, re.S)
+    assert m, "escHtml function not found in app.js"
+    body = m.group(0)
+    # Must include a replace for single quote (either &#39; or &#x27; or &apos;)
+    assert re.search(r"replace\(/\'/g,\s*'&#(?:39|x27|apos);'\)", body), (
+        "escHtml does not escape single quotes — stored XSS via onclick attribute"
+    )
