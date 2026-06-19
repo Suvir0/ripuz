@@ -1,0 +1,21 @@
+{
+  "projectId": "7ea900e1-df70-47f7-83a1-f6a0b71b1849",
+  "shape": "storybook",
+  "storybookConfigDir": "design-system/.storybook",
+  "storybookStatic": ".design-sync/sb-reference",
+  "pkg": "@ripuz/ui",
+  "buildCmd": "cd design-system && npm run build",
+  "titleMap": {
+    "Primitives/Icons": null,
+    "Screens/FullApp": null
+  },
+  "extraEntries": ["./src/_ds_wrap.tsx"],
+  "provider": { "component": "DsThemeWrap", "props": {} },
+  "overrides": {
+    "Modal": { "cardMode": "single" },
+    "AddScreen": { "viewport": "1280x1024" },
+    "JobsScreen": { "viewport": "1280x1024" },
+    "LibraryScreen": { "viewport": "1280x1024" },
+    "SettingsScreen": { "viewport": "1280x1024" }
+  }
+}

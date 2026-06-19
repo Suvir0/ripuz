@@ -34,3 +34,10 @@ config.ini
 
 # Private dev / deploy notes (keep local, never publish)
 CLAUDE.md
+
+# Design-sync build artifacts (regenerated each sync)
+.design-sync/sb-reference/
+.design-sync/learnings/
+.design-sync/.cache/
+.ds-sync/
+ds-bundle/
