@@ -1,0 +1,41 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 5px 9px 5px 8px;
+  border-radius: var(--radius);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.pill--queued    { background: var(--surface-2); color: var(--muted); }
+.pill--queued::before { background: var(--muted); }
+
+.pill--running   { background: var(--warn-bg); color: var(--warn); }
+.pill--running::before { background: var(--warn); animation: pill-pulse 1.1s ease-in-out infinite; }
+
+.pill--tagging   { background: var(--info-bg); color: var(--info); }
+.pill--tagging::before { background: var(--info); animation: pill-pulse 1.1s ease-in-out infinite; }
+
+.pill--done      { background: var(--success-bg); color: var(--success); }
+.pill--warn      { background: var(--warn-bg); color: var(--warn); }
+.pill--error     { background: var(--error-bg); color: var(--error); }
+.pill--review    { background: var(--info-bg); color: var(--info); }
+.pill--review::before { background: var(--info); animation: pill-pulse 1.1s ease-in-out infinite; }
+.pill--cancelled { background: var(--surface-2); color: var(--muted); }
+
+@keyframes pill-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}

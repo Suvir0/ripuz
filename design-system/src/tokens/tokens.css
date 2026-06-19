@@ -1,0 +1,52 @@
+/* ── ripuz design tokens ──────────────────────────────────────────── */
+:root {
+  --bg:          #efece6;
+  --paper:       #f6f3ee;
+  --surface:     #ffffff;
+  --surface-2:   #f4f1eb;
+  --ink:         #1a1816;
+  --ink-soft:    #2e2a26;
+  --muted:       #84807a;
+  --faint:       #b8b3ab;
+  --line:        rgba(26, 24, 22, 0.12);
+  --line-strong: rgba(26, 24, 22, 0.28);
+  --accent:      #ff4d1f;
+  --accent-ink:  #ffffff;
+  --success:     #2a7a4a;
+  --success-bg:  #e0eee2;
+  --warn:        #a36a00;
+  --warn-bg:     #f3e9d2;
+  --error:       #b8311f;
+  --error-bg:    #f3dcd6;
+  --info:        #2b5fa3;
+  --info-bg:     #dce5f1;
+
+  --radius:      2px;
+  --radius-lg:   4px;
+
+  --font-sans:   "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:   "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+}
+
+[data-theme="dark"] {
+  --bg:          #14130f;
+  --paper:       #1b1916;
+  --surface:     #201d19;
+  --surface-2:   #26231e;
+  --ink:         #f4f0e6;
+  --ink-soft:    #d8d3c7;
+  --muted:       #8a8479;
+  --faint:       #58544c;
+  --line:        rgba(244, 240, 230, 0.10);
+  --line-strong: rgba(244, 240, 230, 0.24);
+  --accent:      #ff5a2c;
+  --accent-ink:  #14130f;
+  --success:     #6dbf85;
+  --success-bg:  #1f2e22;
+  --warn:        #d8a64a;
+  --warn-bg:     #2e261a;
+  --error:       #e36a55;
+  --error-bg:    #2e1d18;
+  --info:        #7aa3d8;
+  --info-bg:     #1c2533;
+}

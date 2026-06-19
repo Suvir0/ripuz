@@ -1,0 +1,10 @@
+.explicit-tag {
+  font-size: 9px;
+  background: #c0392b;
+  color: #fff;
+  border-radius: 2px;
+  padding: 1px 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+  font-weight: 700;
+}

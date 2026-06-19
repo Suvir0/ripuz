@@ -1,0 +1,26 @@
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+.section-head h2 {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.section-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.section-tag b {
+  color: var(--accent);
+  font-weight: 500;
+}
+@media (max-width: 640px) {
+  .section-head h2 { font-size: 22px; }
+}

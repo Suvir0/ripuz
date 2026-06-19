@@ -1,0 +1,22 @@
+.app-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 0 18px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 28px;
+}
+.app-bar__right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.tab-panel { display: none; }
+.tab-panel--active {
+  display: block;
+  animation: tab-fade 0.18s ease;
+}
+@keyframes tab-fade {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: none; }
+}

@@ -1,0 +1,16 @@
+select {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  padding: 11px 13px;
+  font-size: 14px;
+  font-family: var(--font-mono);
+  transition: border-color 0.12s ease;
+  cursor: pointer;
+}
+select:hover { border-color: var(--line-strong); }
+select:focus {
+  outline: none;
+  border-color: var(--ink);
+}

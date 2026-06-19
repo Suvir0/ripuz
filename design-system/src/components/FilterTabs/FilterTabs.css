@@ -1,0 +1,24 @@
+.filter-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.filter-tabs__btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.filter-tabs__btn:hover { color: var(--ink); }
+.filter-tabs__btn[aria-selected="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}

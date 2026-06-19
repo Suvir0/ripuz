@@ -1,0 +1,15 @@
+.msg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-left: 12px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.msg--show { opacity: 1; }
+.msg--ok  { color: var(--success); }
+.msg--err { color: var(--error); }

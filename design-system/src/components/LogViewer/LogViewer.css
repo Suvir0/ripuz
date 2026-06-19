@@ -1,0 +1,18 @@
+.log-viewer {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-viewer .log-num {
+  display: inline-block;
+  width: 28px;
+  color: var(--faint);
+  user-select: none;
+}
+.log-viewer .log-ok   { color: var(--success); }
+.log-viewer .log-err  { color: var(--error); }
+.log-viewer .log-warn { color: var(--warn); }
+.log-viewer .log-dim  { color: var(--muted); }

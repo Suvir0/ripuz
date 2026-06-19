@@ -1,0 +1,48 @@
+.info-card {
+  background: var(--surface-2);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+.info-card h4 {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+.info-card ol {
+  list-style: none;
+  counter-reset: steps;
+}
+.info-card li {
+  counter-increment: steps;
+  padding: 4px 0 4px 28px;
+  position: relative;
+  line-height: 1.5;
+}
+.info-card li::before {
+  content: counter(steps, decimal-leading-zero);
+  position: absolute;
+  left: 0;
+  top: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+.info-card code,
+.info-card kbd {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  border-radius: var(--radius);
+  color: var(--ink);
+}

@@ -1,0 +1,13 @@
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  cursor: pointer;
+  accent-color: var(--accent);
+}

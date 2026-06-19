@@ -1,0 +1,7 @@
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+}
+.card + .card { margin-top: 16px; }

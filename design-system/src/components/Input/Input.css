@@ -1,0 +1,29 @@
+input[type="text"],
+input[type="password"],
+input[type="url"],
+input[type="search"],
+input[type="email"],
+textarea,
+.input {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  padding: 11px 13px;
+  font-size: 14px;
+  font-family: var(--font-mono);
+  width: 100%;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+input::placeholder,
+textarea::placeholder { color: var(--faint); }
+input:hover,
+textarea:hover { border-color: var(--line-strong); }
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--ink);
+  background: var(--surface);
+}
+[data-theme="dark"] input:focus,
+[data-theme="dark"] textarea:focus { border-color: var(--accent); }
